@@ -1,0 +1,121 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  ADMIN
+  RRHH
+  SUPERVISOR
+}
+
+enum AttendanceType {
+  ENTRADA
+  SALIDA
+}
+
+enum AttendanceStatus {
+  VALIDO
+  ATRASO
+  OBSERVADO
+  CORREGIDO
+}
+
+enum TerminalStatus {
+  ACTIVE
+  INACTIVE
+}
+
+model User {
+  id                Int                @id @default(autoincrement())
+  name              String
+  email             String             @unique
+  passwordHash      String
+  role              Role               @default(RRHH)
+  active            Boolean            @default(true)
+  createdAt         DateTime           @default(now())
+  updatedAt         DateTime           @updatedAt
+  correctedRecords  AttendanceRecord[] @relation("RecordCorrector")
+  auditLogs         AuditLog[]
+}
+
+model Employee {
+  id                Int                @id @default(autoincrement())
+  rut               String             @unique
+  name              String
+  email             String             @unique
+  position          String
+  department        String
+  pinHash           String
+  shiftId           Int?
+  active            Boolean            @default(true)
+  createdAt         DateTime           @default(now())
+  updatedAt         DateTime           @updatedAt
+  shift             Shift?             @relation(fields: [shiftId], references: [id])
+  attendanceRecords AttendanceRecord[]
+}
+
+model Shift {
+  id               Int        @id @default(autoincrement())
+  name             String
+  startTime        String
+  endTime          String
+  toleranceMinutes Int        @default(10)
+  active           Boolean    @default(true)
+  createdAt        DateTime   @default(now())
+  updatedAt        DateTime   @updatedAt
+  employees        Employee[]
+}
+
+model Terminal {
+  id                Int                @id @default(autoincrement())
+  code              String             @unique
+  name              String
+  location          String
+  branch            String
+  status            TerminalStatus     @default(ACTIVE)
+  lastUsedAt        DateTime?
+  createdAt         DateTime           @default(now())
+  updatedAt         DateTime           @updatedAt
+  attendanceRecords AttendanceRecord[]
+}
+
+model AttendanceRecord {
+  id               Int              @id @default(autoincrement())
+  employeeId       Int
+  terminalId       Int
+  type             AttendanceType
+  date             DateTime
+  time             String
+  status           AttendanceStatus @default(VALIDO)
+  notes            String?
+  correctedById    Int?
+  correctionReason String?
+  createdAt        DateTime         @default(now())
+  updatedAt        DateTime         @updatedAt
+  employee         Employee         @relation(fields: [employeeId], references: [id])
+  terminal         Terminal         @relation(fields: [terminalId], references: [id])
+  correctedBy      User?            @relation("RecordCorrector", fields: [correctedById], references: [id])
+
+  @@index([date])
+  @@index([employeeId, date])
+}
+
+model AuditLog {
+  id        Int      @id @default(autoincrement())
+  userId    Int?
+  action    String
+  entity    String
+  entityId  String?
+  detail    String
+  ipAddress String?
+  createdAt DateTime @default(now())
+  user      User?    @relation(fields: [userId], references: [id])
+
+  @@index([action])
+  @@index([createdAt])
+}
