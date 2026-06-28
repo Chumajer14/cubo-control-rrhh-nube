@@ -27,6 +27,11 @@ export default function LedDisplay({
           {terminalConfig.terminalCode || "SIN CODIGO"} -{" "}
           {(terminalConfig.terminalName || "SIN CONFIGURACION").toUpperCase()}
         </small>
+        <div className="led-connection-status">
+          <span>Terminal: {terminalConfig.terminalCode || "SIN CODIGO"}</span>
+          <span>Modo: {terminalConfig.mode}</span>
+          <span>Estado conexion: {terminalConfig.mode === "API" ? "AWS API" : "LOCAL MOCK"}</span>
+        </div>
       </div>
 
       <div className="led-clock">{formatClock(now)}</div>
@@ -66,13 +71,13 @@ export default function LedDisplay({
         </div>
       ) : null}
 
-      {isProcessing ? <div className="led-single-message">REGISTRANDO...</div> : null}
+      {isProcessing ? <div className="led-single-message">{statusMessage}</div> : null}
 
-      {isSuccess && lastEvent ? (
+      {isSuccess ? (
         <div className="led-result">
           <strong>{statusMessage}</strong>
-          <span>{lastEvent.employeeName}</span>
-          <span>{lastEvent.eventLabel}</span>
+          {lastEvent?.employeeName ? <span>{lastEvent.employeeName}</span> : null}
+          {lastEvent?.eventLabel ? <span>{lastEvent.eventLabel}</span> : null}
         </div>
       ) : null}
 

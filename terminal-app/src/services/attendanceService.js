@@ -1,5 +1,5 @@
 import { findEmployeeByRun, validateEmployeePin } from "./mockEmployeeService";
-import { getTerminalConfig } from "./terminalConfigService";
+import { getTerminalConfig, normalizeApiBaseUrl } from "./terminalConfigService";
 import { createTimestampParts } from "../utils/dateTime";
 import { EVENT_LABELS, EVENT_TYPES, getSuccessMessage } from "../utils/eventTypes";
 
@@ -33,6 +33,14 @@ export function saveLocalEvents(events) {
 
 export function clearLocalEvents() {
   saveLocalEvents([]);
+}
+
+export function deleteLocalEvent(eventId) {
+  saveLocalEvents(getLocalEvents().filter((event) => event.id !== eventId));
+}
+
+export function getPendingEvents() {
+  return getLocalEvents().filter((event) => event.syncStatus === "PENDING");
 }
 
 function appendLocalEvent(event) {
@@ -117,23 +125,114 @@ function buildAttendanceEvent({ employee, eventType, terminalConfig, syncStatus 
   };
 }
 
-async function postEventToApi(event, apiBaseUrl) {
-  const response = await fetch(`${apiBaseUrl}/attendance/mark`, {
+function buildPendingApiEvent({ run, eventType, terminalCode, timestamp }) {
+  const timestampDate = new Date(timestamp);
+  const timestampParts = createTimestampParts(Number.isNaN(timestampDate.getTime()) ? new Date() : timestampDate);
+
+  return {
+    id: createId(),
+    run,
+    eventType,
+    terminalCode,
+    ...timestampParts,
+    syncStatus: "PENDING",
+    source: "TERMINAL_PC",
+    inputMethod: "QR_CEDULA_SCANNER",
+    pendingReason: "REQUIRES_PIN_REVALIDATION"
+  };
+}
+
+async function readJsonResponse(response) {
+  try {
+    return await response.json();
+  } catch {
+    return {};
+  }
+}
+
+async function postMarkToApi({ payload, apiBaseUrl }) {
+  const normalizedApiBaseUrl = normalizeApiBaseUrl(apiBaseUrl);
+  const response = await fetch(`${normalizedApiBaseUrl}/attendance/mark`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json"
     },
-    body: JSON.stringify(event)
+    body: JSON.stringify(payload)
   });
+  const data = await readJsonResponse(response);
 
-  if (!response.ok) {
-    throw new Error("API attendance request failed");
+  if (response.ok && data.ok === true) {
+    return {
+      ok: true,
+      message: data.message || getSuccessMessage(payload.eventType),
+      employeeName: data.employeeName,
+      eventType: data.eventType,
+      timestamp: data.timestamp,
+      source: "AWS_API"
+    };
   }
 
-  return response.json();
+  return {
+    ok: false,
+    message: data.message || "ERROR API"
+  };
 }
 
-export async function registerAttendanceEvent({ run, pin, eventType, terminalCode }) {
+export async function registerAttendanceEventApi({ run, pin, eventType, terminalCode, apiBaseUrl }) {
+  const normalizedRun = String(run ?? "").trim().toUpperCase();
+  const normalizedPin = String(pin ?? "");
+  const normalizedTerminalCode = String(terminalCode ?? "").trim().toUpperCase();
+  const normalizedApiBaseUrl = normalizeApiBaseUrl(apiBaseUrl);
+
+  if (!normalizedRun) {
+    return { ok: false, message: "RUN NO DETECTADO" };
+  }
+
+  if (!normalizedPin) {
+    return { ok: false, message: "PIN INCORRECTO" };
+  }
+
+  if (!EVENT_LABELS[eventType]) {
+    return { ok: false, message: "EVENTO INVALIDO" };
+  }
+
+  if (!normalizedTerminalCode) {
+    return { ok: false, message: "TERMINAL SIN CONFIGURACION" };
+  }
+
+  if (!normalizedApiBaseUrl) {
+    return { ok: false, message: "API NO CONFIGURADA" };
+  }
+
+  const timestamp = new Date().toISOString();
+  const payload = {
+    run: normalizedRun,
+    pin: normalizedPin,
+    eventType,
+    terminalCode: normalizedTerminalCode,
+    timestamp
+  };
+
+  try {
+    return await postMarkToApi({ payload, apiBaseUrl: normalizedApiBaseUrl });
+  } catch {
+    const pendingEvent = buildPendingApiEvent({
+      run: normalizedRun,
+      eventType,
+      terminalCode: normalizedTerminalCode,
+      timestamp
+    });
+    appendLocalEvent(pendingEvent);
+    return {
+      ok: false,
+      message: "SIN CONEXION - EVENTO GUARDADO PENDIENTE",
+      pending: true,
+      event: pendingEvent
+    };
+  }
+}
+
+export function registerAttendanceEventLocal({ run, pin, eventType, terminalCode }) {
   const normalizedRun = String(run ?? "").trim().toUpperCase();
   const normalizedPin = String(pin ?? "");
   const terminalConfig = getTerminalConfig();
@@ -147,12 +246,12 @@ export async function registerAttendanceEvent({ run, pin, eventType, terminalCod
     return { ok: false, message: "RUN NO DETECTADO" };
   }
 
-  if (!effectiveTerminalConfig.terminalCode) {
-    return { ok: false, message: "TERMINAL SIN CONFIGURACION" };
-  }
-
   if (!EVENT_LABELS[eventType]) {
     return { ok: false, message: "EVENTO INVALIDO" };
+  }
+
+  if (!effectiveTerminalConfig.terminalCode) {
+    return { ok: false, message: "TERMINAL SIN CONFIGURACION" };
   }
 
   const employee = findEmployeeByRun(normalizedRun);
@@ -180,18 +279,27 @@ export async function registerAttendanceEvent({ run, pin, eventType, terminalCod
     syncStatus: effectiveTerminalConfig.mode === "API" ? "PENDING" : "LOCAL_ONLY"
   });
 
-  if (effectiveTerminalConfig.mode === "API") {
-    try {
-      await postEventToApi(event, effectiveTerminalConfig.apiBaseUrl);
-      const syncedEvent = { ...event, syncStatus: "SYNCED" };
-      appendLocalEvent(syncedEvent);
-      return { ok: true, message: getSuccessMessage(eventType), event: syncedEvent };
-    } catch {
-      appendLocalEvent(event);
-      return { ok: true, message: `${getSuccessMessage(eventType)} - PENDIENTE`, event };
-    }
-  }
-
   appendLocalEvent(event);
   return { ok: true, message: getSuccessMessage(eventType), event };
+}
+
+export async function registerAttendanceEvent({ run, pin, eventType }) {
+  const config = getTerminalConfig();
+
+  if (config.mode === "API") {
+    return registerAttendanceEventApi({
+      run,
+      pin,
+      eventType,
+      terminalCode: config.terminalCode,
+      apiBaseUrl: config.apiBaseUrl
+    });
+  }
+
+  return registerAttendanceEventLocal({
+    run,
+    pin,
+    eventType,
+    terminalCode: config.terminalCode
+  });
 }

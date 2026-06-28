@@ -33,6 +33,7 @@ export default function App() {
   const [adminOpen, setAdminOpen] = useState(false);
   const [terminalConfig, setTerminalConfig] = useState(() => getTerminalConfig());
   const resetTimerRef = useRef(null);
+  const connectionStatusShownRef = useRef(false);
 
   const selectedEventLabel = useMemo(
     () => (selectedEventType ? EVENT_LABELS[selectedEventType] : ""),
@@ -57,6 +58,18 @@ export default function App() {
     setLastEvent(null);
     setStatus({ message, tone });
   }, []);
+
+  useEffect(() => {
+    if (connectionStatusShownRef.current || terminalConfig.mode !== "API") {
+      return undefined;
+    }
+
+    connectionStatusShownRef.current = true;
+    setStatus({ message: "CONECTANDO CON AWS...", tone: "busy" });
+    const timerId = window.setTimeout(() => resetToIdle(), 900);
+
+    return () => window.clearTimeout(timerId);
+  }, [resetToIdle, terminalConfig.mode]);
 
   const finishWithStatus = useCallback((message, tone, event = null) => {
     window.clearTimeout(resetTimerRef.current);
@@ -105,17 +118,23 @@ export default function App() {
     }
 
     setTerminalState(TERMINAL_STATES.PROCESSING);
-    setStatus({ message: "REGISTRANDO...", tone: "busy" });
+    setStatus({
+      message: terminalConfig.mode === "API" ? "REGISTRANDO EN AWS..." : "REGISTRANDO...",
+      tone: "busy"
+    });
 
     const result = await registerAttendanceEvent({
       run: detectedRun,
       pin,
-      eventType: selectedEventType,
-      terminalCode: terminalConfig.terminalCode
+      eventType: selectedEventType
     });
 
-    finishWithStatus(result.message, result.ok ? "success" : "error", result.event ?? null);
-  }, [detectedRun, finishWithStatus, pin, selectedEventType, terminalConfig.terminalCode, terminalState]);
+    const resultEvent = result.event ?? {
+      employeeName: result.employeeName,
+      eventLabel: EVENT_LABELS[result.eventType] || EVENT_LABELS[selectedEventType]
+    };
+    finishWithStatus(result.message, result.ok ? "success" : "error", resultEvent);
+  }, [detectedRun, finishWithStatus, pin, selectedEventType, terminalConfig.mode, terminalState]);
 
   const handleScanComplete = useCallback(
     (scanText) => {
