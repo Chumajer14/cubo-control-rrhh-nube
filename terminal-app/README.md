@@ -45,27 +45,41 @@ npm run dist
 
 ## Teclas funcionales
 
-- `0` a `9`: agregan digitos al codigo de empleado.
-- `Backspace`: borra el ultimo digito.
-- `Escape`: limpia el codigo ingresado.
-- `Enter`: repite la ultima accion F1-F5 seleccionada.
-- `F1`: ingreso.
-- `F2`: salida.
-- `F3`: vale de almuerzo.
-- `F4`: inicio de almuerzo.
-- `F5`: fin de almuerzo.
+- `F1`: selecciona ingreso.
+- `F2`: selecciona salida.
+- `F3`: selecciona vale de almuerzo.
+- `F4`: selecciona inicio de almuerzo.
+- `F5`: selecciona fin de almuerzo.
 - `F6`: modo administrador.
+- `0` a `9`: ingresan PIN solo cuando el terminal lo solicita.
+- `Backspace`: borra el ultimo digito del PIN.
+- `Escape`: cancela la operacion actual.
+- `Enter`: confirma el PIN.
+
+## Escaneo de QR de cedula
+
+La pistola scanner actua como teclado fisico. El flujo de marcaje es:
+
+1. Seleccionar accion con `F1` a `F5`.
+2. Escanear el QR de cedula.
+3. Extraer solo el RUN desde el texto recibido.
+4. Ingresar PIN del empleado.
+5. Registrar el evento local si RUN, PIN y reglas son validos.
+
+El terminal no consulta Registro Civil, no guarda la URL completa, no guarda MRZ, no guarda numero de serie y no persiste el texto crudo del QR. El buffer de scanner se usa solo para extraer el RUN y se limpia inmediatamente.
+
+Los datos usados en este MVP son ficticios. En produccion, el RUN debe tratarse como dato personal; el backend debe validar permisos, cifrar datos en transito y aplicar controles de proteccion de datos. El PIN tampoco debe almacenarse en texto plano: debe validarse contra un backend seguro usando hash y politicas de rotacion.
 
 ## Datos demo
 
-La lista mock esta en `src/data/mockEmployees.js` e incluye seis empleados ficticios:
+La lista mock esta en `src/data/mockEmployees.js` e incluye seis empleados ficticios con RUN valido y PIN demo:
 
-- `1001` Juan Perez, Administracion, activo.
-- `1002` Maria Gonzalez, RR.HH., activo.
-- `1003` Carlos Rojas, Operaciones, activo.
-- `1004` Ana Soto, Finanzas, activo.
-- `1005` Pedro Morales, Soporte, inactivo.
-- `1006` Camila Herrera, Bodega, activo.
+- `12345678-5` Juan Perez, Administracion, activo, PIN `1234`.
+- `11111111-1` Maria Gonzalez, RR.HH., activo, PIN `2345`.
+- `22222222-2` Carlos Rojas, Operaciones, activo, PIN `3456`.
+- `33333333-3` Ana Soto, Finanzas, activo, PIN `4567`.
+- `44444444-4` Pedro Morales, Soporte, inactivo, PIN `5678`.
+- `55555555-5` Camila Herrera, Bodega, activo, PIN `6789`.
 
 No se usan RUN reales, cedulas, numeros de serie reales, MRZ ni datos personales reales.
 
@@ -93,7 +107,7 @@ Los eventos se guardan en `localStorage` con esta estructura:
 ```json
 {
   "id": "uuid",
-  "employeeCode": "1001",
+  "employeeRun": "12345678-5",
   "employeeName": "Juan Perez",
   "employeeArea": "Administracion",
   "terminalCode": "TERM-001",
@@ -104,6 +118,7 @@ Los eventos se guardan en `localStorage` con esta estructura:
   "localDate": "2026-06-28",
   "localTime": "08:45:22",
   "source": "TERMINAL_PC",
+  "inputMethod": "QR_CEDULA_SCANNER",
   "deviceMode": "KIOSK",
   "syncStatus": "LOCAL_ONLY"
 }
@@ -113,9 +128,11 @@ En modo `LOCAL_MOCK`, el estado queda como `LOCAL_ONLY`. En modo `API`, el servi
 
 ## Reglas de marcaje
 
-- No registra codigo vacio.
+- No registra si no hay RUN extraido.
+- No registra si el RUN tiene formato o digito verificador invalido.
 - No registra empleados inexistentes.
 - No registra empleados inactivos.
+- No registra PIN incorrecto.
 - No registra eventos desconocidos.
 - No registra si el terminal no tiene codigo configurado.
 - No permite dos ingresos seguidos sin salida.

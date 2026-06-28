@@ -1,4 +1,4 @@
-import { findEmployeeByCode } from "./mockEmployeeService";
+import { findEmployeeByRun, validateEmployeePin } from "./mockEmployeeService";
 import { getTerminalConfig } from "./terminalConfigService";
 import { createTimestampParts } from "../utils/dateTime";
 import { EVENT_LABELS, EVENT_TYPES, getSuccessMessage } from "../utils/eventTypes";
@@ -40,38 +40,38 @@ function appendLocalEvent(event) {
   saveLocalEvents([event, ...events]);
 }
 
-function findLastEvent(employeeCode, eventTypes) {
+function findLastEvent(employeeRun, eventTypes) {
   return getLocalEvents().find(
-    (event) => event.employeeCode === employeeCode && eventTypes.includes(event.eventType)
+    (event) => event.employeeRun === employeeRun && eventTypes.includes(event.eventType)
   );
 }
 
-function hasEventToday(employeeCode, eventType, localDate) {
+function hasEventToday(employeeRun, eventType, localDate) {
   return getLocalEvents().some(
     (event) =>
-      event.employeeCode === employeeCode &&
+      event.employeeRun === employeeRun &&
       event.eventType === eventType &&
       event.localDate === localDate
   );
 }
 
-function validateEventRules(employeeCode, eventType, localDate) {
+function validateEventRules(employeeRun, eventType, localDate) {
   if (eventType === EVENT_TYPES.INGRESO) {
-    const lastAttendance = findLastEvent(employeeCode, [EVENT_TYPES.INGRESO, EVENT_TYPES.SALIDA]);
+    const lastAttendance = findLastEvent(employeeRun, [EVENT_TYPES.INGRESO, EVENT_TYPES.SALIDA]);
     if (lastAttendance?.eventType === EVENT_TYPES.INGRESO) {
       return "INGRESO YA REGISTRADO";
     }
   }
 
   if (eventType === EVENT_TYPES.SALIDA) {
-    const lastAttendance = findLastEvent(employeeCode, [EVENT_TYPES.INGRESO, EVENT_TYPES.SALIDA]);
+    const lastAttendance = findLastEvent(employeeRun, [EVENT_TYPES.INGRESO, EVENT_TYPES.SALIDA]);
     if (!lastAttendance || lastAttendance.eventType === EVENT_TYPES.SALIDA) {
       return "NO EXISTE INGRESO PREVIO";
     }
   }
 
   if (eventType === EVENT_TYPES.INICIO_ALMUERZO) {
-    const lastLunch = findLastEvent(employeeCode, [
+    const lastLunch = findLastEvent(employeeRun, [
       EVENT_TYPES.INICIO_ALMUERZO,
       EVENT_TYPES.FIN_ALMUERZO
     ]);
@@ -81,7 +81,7 @@ function validateEventRules(employeeCode, eventType, localDate) {
   }
 
   if (eventType === EVENT_TYPES.FIN_ALMUERZO) {
-    const lastLunch = findLastEvent(employeeCode, [
+    const lastLunch = findLastEvent(employeeRun, [
       EVENT_TYPES.INICIO_ALMUERZO,
       EVENT_TYPES.FIN_ALMUERZO
     ]);
@@ -90,7 +90,7 @@ function validateEventRules(employeeCode, eventType, localDate) {
     }
   }
 
-  if (eventType === EVENT_TYPES.VALE_ALMUERZO && hasEventToday(employeeCode, eventType, localDate)) {
+  if (eventType === EVENT_TYPES.VALE_ALMUERZO && hasEventToday(employeeRun, eventType, localDate)) {
     return "VALE YA REGISTRADO HOY";
   }
 
@@ -102,7 +102,7 @@ function buildAttendanceEvent({ employee, eventType, terminalConfig, syncStatus 
 
   return {
     id: createId(),
-    employeeCode: employee.code,
+    employeeRun: employee.run,
     employeeName: employee.name,
     employeeArea: employee.area,
     terminalCode: terminalConfig.terminalCode,
@@ -111,6 +111,7 @@ function buildAttendanceEvent({ employee, eventType, terminalConfig, syncStatus 
     eventLabel: EVENT_LABELS[eventType],
     ...timestampParts,
     source: "TERMINAL_PC",
+    inputMethod: "QR_CEDULA_SCANNER",
     deviceMode: "KIOSK",
     syncStatus
   };
@@ -132,16 +133,21 @@ async function postEventToApi(event, apiBaseUrl) {
   return response.json();
 }
 
-export async function registerAttendanceEvent({ employeeCode, eventType }) {
-  const normalizedCode = String(employeeCode ?? "").trim();
+export async function registerAttendanceEvent({ run, pin, eventType, terminalCode }) {
+  const normalizedRun = String(run ?? "").trim().toUpperCase();
+  const normalizedPin = String(pin ?? "");
   const terminalConfig = getTerminalConfig();
+  const effectiveTerminalConfig = {
+    ...terminalConfig,
+    terminalCode: terminalCode || terminalConfig.terminalCode
+  };
   const currentDate = createTimestampParts().localDate;
 
-  if (!normalizedCode) {
-    return { ok: false, message: "CODIGO INVALIDO" };
+  if (!normalizedRun) {
+    return { ok: false, message: "RUN NO DETECTADO" };
   }
 
-  if (!terminalConfig.terminalCode) {
+  if (!effectiveTerminalConfig.terminalCode) {
     return { ok: false, message: "TERMINAL SIN CONFIGURACION" };
   }
 
@@ -149,7 +155,7 @@ export async function registerAttendanceEvent({ employeeCode, eventType }) {
     return { ok: false, message: "EVENTO INVALIDO" };
   }
 
-  const employee = findEmployeeByCode(normalizedCode);
+  const employee = findEmployeeByRun(normalizedRun);
   if (!employee) {
     return { ok: false, message: "EMPLEADO NO ENCONTRADO" };
   }
@@ -158,7 +164,11 @@ export async function registerAttendanceEvent({ employeeCode, eventType }) {
     return { ok: false, message: "EMPLEADO INACTIVO" };
   }
 
-  const ruleMessage = validateEventRules(normalizedCode, eventType, currentDate);
+  if (!validateEmployeePin(normalizedRun, normalizedPin)) {
+    return { ok: false, message: "PIN INCORRECTO" };
+  }
+
+  const ruleMessage = validateEventRules(normalizedRun, eventType, currentDate);
   if (ruleMessage) {
     return { ok: false, message: ruleMessage };
   }
@@ -166,13 +176,13 @@ export async function registerAttendanceEvent({ employeeCode, eventType }) {
   const event = buildAttendanceEvent({
     employee,
     eventType,
-    terminalConfig,
-    syncStatus: terminalConfig.mode === "API" ? "PENDING" : "LOCAL_ONLY"
+    terminalConfig: effectiveTerminalConfig,
+    syncStatus: effectiveTerminalConfig.mode === "API" ? "PENDING" : "LOCAL_ONLY"
   });
 
-  if (terminalConfig.mode === "API") {
+  if (effectiveTerminalConfig.mode === "API") {
     try {
-      await postEventToApi(event, terminalConfig.apiBaseUrl);
+      await postEventToApi(event, effectiveTerminalConfig.apiBaseUrl);
       const syncedEvent = { ...event, syncStatus: "SYNCED" };
       appendLocalEvent(syncedEvent);
       return { ok: true, message: getSuccessMessage(eventType), event: syncedEvent };

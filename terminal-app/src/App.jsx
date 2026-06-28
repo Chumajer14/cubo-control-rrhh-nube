@@ -4,24 +4,39 @@ import FunctionPad from "./components/FunctionPad";
 import LedDisplay from "./components/LedDisplay";
 import NumericPad from "./components/NumericPad";
 import StatusMessage from "./components/StatusMessage";
+import useScannerInput from "./hooks/useScannerInput";
 import { registerAttendanceEvent } from "./services/attendanceService";
 import { getTerminalConfig } from "./services/terminalConfigService";
 import { EVENT_LABELS, FUNCTION_KEYS } from "./utils/eventTypes";
+import { extractRunFromScan, maskRun } from "./utils/runParser";
 
-const MAX_CODE_LENGTH = 10;
+const MAX_PIN_LENGTH = 8;
+const TERMINAL_STATES = {
+  IDLE: "IDLE",
+  WAITING_SCAN: "WAITING_SCAN",
+  WAITING_PIN: "WAITING_PIN",
+  PROCESSING: "PROCESSING",
+  SUCCESS: "SUCCESS",
+  ERROR: "ERROR",
+  ADMIN_AUTH: "ADMIN_AUTH",
+  ADMIN_MODE: "ADMIN_MODE"
+};
 
 export default function App() {
   const [now, setNow] = useState(new Date());
-  const [employeeCode, setEmployeeCode] = useState("");
-  const [status, setStatus] = useState({ message: "INGRESE CODIGO", tone: "idle" });
-  const [lastAction, setLastAction] = useState(null);
+  const [terminalState, setTerminalState] = useState(TERMINAL_STATES.IDLE);
+  const [pin, setPin] = useState("");
+  const [detectedRun, setDetectedRun] = useState("");
+  const [status, setStatus] = useState({ message: "SELECCIONE ACCION", tone: "idle" });
+  const [selectedEventType, setSelectedEventType] = useState(null);
+  const [lastEvent, setLastEvent] = useState(null);
   const [adminOpen, setAdminOpen] = useState(false);
   const [terminalConfig, setTerminalConfig] = useState(() => getTerminalConfig());
   const resetTimerRef = useRef(null);
 
   const selectedEventLabel = useMemo(
-    () => (lastAction ? EVENT_LABELS[lastAction] : ""),
-    [lastAction]
+    () => (selectedEventType ? EVENT_LABELS[selectedEventType] : ""),
+    [selectedEventType]
   );
 
   useEffect(() => {
@@ -33,66 +48,132 @@ export default function App() {
     return () => window.clearTimeout(resetTimerRef.current);
   }, []);
 
-  const setTemporaryStatus = useCallback((message, tone = "idle", clearCode = false) => {
+  const resetToIdle = useCallback((message = "SELECCIONE ACCION", tone = "idle") => {
     window.clearTimeout(resetTimerRef.current);
+    setTerminalState(TERMINAL_STATES.IDLE);
+    setSelectedEventType(null);
+    setDetectedRun("");
+    setPin("");
+    setLastEvent(null);
+    setStatus({ message, tone });
+  }, []);
+
+  const finishWithStatus = useCallback((message, tone, event = null) => {
+    window.clearTimeout(resetTimerRef.current);
+    setTerminalState(tone === "success" ? TERMINAL_STATES.SUCCESS : TERMINAL_STATES.ERROR);
+    setLastEvent(event);
     setStatus({ message, tone });
 
     resetTimerRef.current = window.setTimeout(() => {
-      if (clearCode) {
-        setEmployeeCode("");
-      }
-      setStatus({ message: "INGRESE CODIGO", tone: "idle" });
+      resetToIdle();
     }, 2600);
-  }, []);
+  }, [resetToIdle]);
 
-  const appendDigit = useCallback((digit) => {
-    setEmployeeCode((current) => {
-      if (current.length >= MAX_CODE_LENGTH) {
+  const appendPinDigit = useCallback((digit) => {
+    if (terminalState !== TERMINAL_STATES.WAITING_PIN) {
+      return;
+    }
+
+    setPin((current) => {
+      if (current.length >= MAX_PIN_LENGTH) {
         return current;
       }
 
       return `${current}${digit}`;
     });
-  }, []);
+  }, [terminalState]);
 
-  const removeDigit = useCallback(() => {
-    setEmployeeCode((current) => current.slice(0, -1));
-  }, []);
+  const removePinDigit = useCallback(() => {
+    if (terminalState === TERMINAL_STATES.WAITING_PIN) {
+      setPin((current) => current.slice(0, -1));
+    }
+  }, [terminalState]);
 
-  const clearCode = useCallback(() => {
-    setEmployeeCode("");
-    setStatus({ message: "INGRESE CODIGO", tone: "idle" });
-  }, []);
+  const cancelOperation = useCallback(() => {
+    finishWithStatus("OPERACION CANCELADA", "error");
+  }, [finishWithStatus]);
 
-  const executeEvent = useCallback(
-    async (eventType) => {
-      setLastAction(eventType);
-      setStatus({ message: "REGISTRANDO...", tone: "busy" });
+  const confirmPin = useCallback(async () => {
+    if (terminalState !== TERMINAL_STATES.WAITING_PIN || !selectedEventType || !detectedRun) {
+      finishWithStatus("SELECCIONE ACCION", "error");
+      return;
+    }
 
-      const result = await registerAttendanceEvent({
-        employeeCode,
-        eventType
-      });
+    if (!pin) {
+      finishWithStatus("PIN INCORRECTO", "error");
+      return;
+    }
 
-      setTemporaryStatus(result.message, result.ok ? "success" : "error", result.ok);
+    setTerminalState(TERMINAL_STATES.PROCESSING);
+    setStatus({ message: "REGISTRANDO...", tone: "busy" });
+
+    const result = await registerAttendanceEvent({
+      run: detectedRun,
+      pin,
+      eventType: selectedEventType,
+      terminalCode: terminalConfig.terminalCode
+    });
+
+    finishWithStatus(result.message, result.ok ? "success" : "error", result.event ?? null);
+  }, [detectedRun, finishWithStatus, pin, selectedEventType, terminalConfig.terminalCode, terminalState]);
+
+  const handleScanComplete = useCallback(
+    (scanText) => {
+      const parsedRun = extractRunFromScan(scanText);
+      scanText = "";
+
+      if (!parsedRun.ok) {
+        finishWithStatus(parsedRun.error === "RUN_INVALIDO" ? "RUN INVALIDO" : "RUN NO DETECTADO", "error");
+        return;
+      }
+
+      setDetectedRun(parsedRun.run);
+      setPin("");
+      setTerminalState(TERMINAL_STATES.WAITING_PIN);
+      setStatus({ message: "INGRESE PIN", tone: "busy" });
     },
-    [employeeCode, setTemporaryStatus]
+    [finishWithStatus]
+  );
+
+  useScannerInput({
+    active: terminalState === TERMINAL_STATES.WAITING_SCAN && !adminOpen,
+    onScanStart: useCallback(() => {
+      setStatus({ message: "LEYENDO CEDULA...", tone: "busy" });
+    }, []),
+    onScanComplete: handleScanComplete
+  });
+
+  const selectEvent = useCallback(
+    (eventType) => {
+      window.clearTimeout(resetTimerRef.current);
+      setSelectedEventType(eventType);
+      setDetectedRun("");
+      setPin("");
+      setLastEvent(null);
+      setTerminalState(TERMINAL_STATES.WAITING_SCAN);
+      setStatus({ message: "ESCANEE CEDULA", tone: "busy" });
+    },
+    []
   );
 
   const handleFunction = useCallback(
     (keyName) => {
       if (keyName === "F6") {
         setStatus({ message: "MODO ADMINISTRADOR", tone: "busy" });
+        setTerminalState(TERMINAL_STATES.ADMIN_AUTH);
         setAdminOpen(true);
         return;
       }
 
       const eventType = FUNCTION_KEYS[keyName];
       if (eventType) {
-        executeEvent(eventType);
+        if (terminalState !== TERMINAL_STATES.IDLE) {
+          return;
+        }
+        selectEvent(eventType);
       }
     },
-    [executeEvent]
+    [selectEvent, terminalState]
   );
 
   useEffect(() => {
@@ -101,31 +182,39 @@ export default function App() {
         return;
       }
 
-      if (/^\d$/.test(event.key)) {
-        event.preventDefault();
-        appendDigit(event.key);
+      if (terminalState === TERMINAL_STATES.WAITING_SCAN) {
+        if (event.key === "Escape") {
+          event.preventDefault();
+          cancelOperation();
+        }
         return;
       }
 
-      if (event.key === "Backspace") {
+      if (/^\d$/.test(event.key)) {
         event.preventDefault();
-        removeDigit();
+        appendPinDigit(event.key);
         return;
       }
 
       if (event.key === "Escape") {
         event.preventDefault();
-        clearCode();
+        if (terminalState === TERMINAL_STATES.IDLE) {
+          resetToIdle();
+        } else {
+          cancelOperation();
+        }
+        return;
+      }
+
+      if (event.key === "Backspace") {
+        event.preventDefault();
+        removePinDigit();
         return;
       }
 
       if (event.key === "Enter") {
         event.preventDefault();
-        if (lastAction) {
-          executeEvent(lastAction);
-        } else {
-          setTemporaryStatus("SELECCIONE ACCION F1-F5", "error");
-        }
+        confirmPin();
         return;
       }
 
@@ -139,13 +228,13 @@ export default function App() {
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [
     adminOpen,
-    appendDigit,
-    clearCode,
-    executeEvent,
+    appendPinDigit,
+    cancelOperation,
+    confirmPin,
     handleFunction,
-    lastAction,
-    removeDigit,
-    setTemporaryStatus
+    removePinDigit,
+    resetToIdle,
+    terminalState
   ]);
 
   return (
@@ -159,10 +248,14 @@ export default function App() {
         <div className="device-content">
           <div className="display-column">
             <LedDisplay
-              code={employeeCode}
               now={now}
               terminalConfig={terminalConfig}
+              terminalState={terminalState}
               selectedEventLabel={selectedEventLabel}
+              maskedRun={maskRun(detectedRun)}
+              pinLength={pin.length}
+              statusMessage={status.message}
+              lastEvent={lastEvent}
             />
             <StatusMessage message={status.message} tone={status.tone} />
           </div>
@@ -171,12 +264,18 @@ export default function App() {
             <FunctionPad
               onFunction={handleFunction}
               selectedFunction={
-                lastAction
-                  ? Object.entries(FUNCTION_KEYS).find(([, value]) => value === lastAction)?.[0]
+                selectedEventType
+                  ? Object.entries(FUNCTION_KEYS).find(([, value]) => value === selectedEventType)?.[0]
                   : ""
               }
             />
-            <NumericPad onDigit={appendDigit} onBackspace={removeDigit} onClear={clearCode} />
+            <NumericPad
+              disabled={terminalState !== TERMINAL_STATES.WAITING_PIN}
+              onDigit={appendPinDigit}
+              onBackspace={removePinDigit}
+              onCancel={cancelOperation}
+              onEnter={confirmPin}
+            />
           </div>
         </div>
       </section>
@@ -185,9 +284,10 @@ export default function App() {
         <AdminModal
           terminalConfig={terminalConfig}
           onConfigChange={setTerminalConfig}
+          onAuthenticated={() => setTerminalState(TERMINAL_STATES.ADMIN_MODE)}
           onClose={() => {
             setAdminOpen(false);
-            setStatus({ message: "INGRESE CODIGO", tone: "idle" });
+            resetToIdle();
           }}
         />
       ) : null}

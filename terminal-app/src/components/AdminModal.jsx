@@ -2,8 +2,9 @@ import { useMemo, useState } from "react";
 import { clearLocalEvents, getLocalEvents } from "../services/attendanceService";
 import { updateTerminalConfig } from "../services/terminalConfigService";
 import { formatEventDateTime } from "../utils/dateTime";
+import { maskRun } from "../utils/runParser";
 
-export default function AdminModal({ terminalConfig, onClose, onConfigChange }) {
+export default function AdminModal({ terminalConfig, onClose, onConfigChange, onAuthenticated }) {
   const [pin, setPin] = useState("");
   const [authenticated, setAuthenticated] = useState(false);
   const [error, setError] = useState("");
@@ -17,6 +18,7 @@ export default function AdminModal({ terminalConfig, onClose, onConfigChange }) 
     if (pin === terminalConfig.adminPin) {
       setAuthenticated(true);
       setError("");
+      onAuthenticated();
       return;
     }
 
@@ -133,7 +135,7 @@ export default function AdminModal({ terminalConfig, onClose, onConfigChange }) 
               <div className="event-table">
                 <div className="event-row event-row-head">
                   <span>Fecha/hora</span>
-                  <span>Codigo</span>
+                  <span>RUN</span>
                   <span>Nombre</span>
                   <span>Evento</span>
                   <span>Estado</span>
@@ -144,7 +146,7 @@ export default function AdminModal({ terminalConfig, onClose, onConfigChange }) 
                   latestEvents.map((event) => (
                     <div className="event-row" key={event.id}>
                       <span>{formatEventDateTime(event)}</span>
-                      <span>{event.employeeCode}</span>
+                      <span>{event.employeeRun ? maskRun(event.employeeRun) : event.employeeCode}</span>
                       <span>{event.employeeName}</span>
                       <span>{event.eventLabel}</span>
                       <span>{event.syncStatus}</span>
