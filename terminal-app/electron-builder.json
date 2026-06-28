@@ -1,0 +1,22 @@
+{
+  "appId": "cl.cubo.control.terminal",
+  "productName": "CUBO Control Terminal",
+  "directories": {
+    "output": "dist"
+  },
+  "files": [
+    "dist/renderer/**/*",
+    "electron/**/*",
+    "package.json"
+  ],
+  "extraMetadata": {
+    "main": "electron/main.js"
+  },
+  "win": {
+    "signAndEditExecutable": false,
+    "target": [
+      "dir"
+    ],
+    "artifactName": "CUBO-Control-Terminal-${version}-${arch}.${ext}"
+  }
+}
