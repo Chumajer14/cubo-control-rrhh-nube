@@ -233,6 +233,7 @@ export default function App() {
         return;
       }
 
+      setRutInput(parsedRun.run);
       setDetectedRun(parsedRun.run);
       setInputMethod(source);
       setPin("");
@@ -244,10 +245,7 @@ export default function App() {
 
   const processScannerBuffer = useCallback(() => {
     const scanText = scannerBufferRef.current;
-    if (!shouldTreatBufferAsScan(scanText)) {
-      if (scanText) {
-        playButtonBeep();
-      }
+    if (!scanText.trim()) {
       scannerBufferRef.current = "";
       return;
     }
@@ -495,7 +493,7 @@ export default function App() {
     }
 
     if (terminalState === TERMINAL_STATES.WAITING_RUT || terminalState === TERMINAL_STATES.ACTION_SELECTED) {
-      if (shouldTreatBufferAsScan(scannerBufferRef.current)) {
+      if (scannerBufferRef.current.trim()) {
         confirmRut("QR_CEDULA_SCANNER", scannerBufferRef.current);
         return;
       }
@@ -700,6 +698,10 @@ export default function App() {
 
         if (event.key === "Enter") {
           event.preventDefault();
+          if (scannerBufferRef.current.trim()) {
+            processScannerBuffer();
+            return;
+          }
           handleOk();
           return;
         }
@@ -707,7 +709,7 @@ export default function App() {
         if (event.key === "Backspace") {
           event.preventDefault();
           playButtonBeep();
-          setRutInput((current) => formatManualRunInput(current.slice(0, -1)));
+          scannerBufferRef.current = scannerBufferRef.current.slice(0, -1);
           return;
         }
 
@@ -720,9 +722,6 @@ export default function App() {
         if (event.key.length === 1) {
           event.preventDefault();
           scannerBufferRef.current += event.key;
-          if (!shouldTreatBufferAsScan(scannerBufferRef.current) && /^[0-9kK-]$/.test(event.key)) {
-            appendRutCharacter(event.key);
-          }
           window.clearTimeout(scannerTimerRef.current);
           scannerTimerRef.current = window.setTimeout(processScannerBuffer, SCANNER_IDLE_TIMEOUT_MS);
         }
