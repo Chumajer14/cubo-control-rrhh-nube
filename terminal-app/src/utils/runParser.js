@@ -107,6 +107,42 @@ export function parseManualRun(rawText) {
   return buildResult(compact.slice(0, -1), compact.slice(-1));
 }
 
+const QR_RUN_TERMINATOR_PATTERN = /type|serial|mrz|cedula|documento|fecha/i;
+
+// Used while the HID scanner is still typing the QR payload into the app.
+export function extractRunFromActiveScanBuffer(rawText) {
+  const text = normalizeScanText(rawText);
+  const runIndex = text.indexOf("run");
+
+  if (runIndex < 0) {
+    return { ok: false, error: "RUN_NO_DETECTADO" };
+  }
+
+  const runSegment = text.slice(runIndex + 3);
+  const separatedRunMatch = runSegment.match(
+    /^[^0-9]{0,24}([0-9]{7,8})[^0-9a-z]+([0-9k])(?:$|[^0-9a-z]|type|serial|mrz|cedula|documento|fecha)/i
+  );
+
+  if (separatedRunMatch) {
+    return buildResult(separatedRunMatch[1], separatedRunMatch[2]);
+  }
+
+  const compactRunWithBoundaryMatch = runSegment.match(
+    /^[^0-9]{0,24}([0-9]{7,8})([0-9k])(?:[^0-9a-z]|type|serial|mrz|cedula|documento|fecha)/i
+  );
+
+  if (compactRunWithBoundaryMatch) {
+    return buildResult(compactRunWithBoundaryMatch[1], compactRunWithBoundaryMatch[2]);
+  }
+
+  if (QR_RUN_TERMINATOR_PATTERN.test(runSegment)) {
+    const scopedSegment = runSegment.split(QR_RUN_TERMINATOR_PATTERN)[0];
+    return buildFirstRunFromCompact(scopedSegment);
+  }
+
+  return { ok: false, error: "RUN_INCOMPLETO" };
+}
+
 export function extractRunFromScan(rawText) {
   // The full QR payload can contain sensitive data. This parser only returns RUN parts.
   const text = normalizeScanText(rawText);

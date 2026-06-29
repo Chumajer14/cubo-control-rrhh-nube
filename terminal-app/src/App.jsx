@@ -24,11 +24,17 @@ import {
 } from "./utils/eventTypes";
 import { ERROR_CODES } from "./utils/errorCodes";
 import { createTimestampParts, formatClock } from "./utils/dateTime";
-import { extractRunFromScan, formatManualRunInput, parseManualRun } from "./utils/runParser";
+import {
+  extractRunFromActiveScanBuffer,
+  extractRunFromScan,
+  formatManualRunInput,
+  parseManualRun
+} from "./utils/runParser";
 
 const MAX_PIN_LENGTH = 8;
 const MAX_ADMIN_PIN_LENGTH = 12;
-const SCANNER_IDLE_TIMEOUT_MS = 700;
+const SCANNER_IDLE_TIMEOUT_MS = 1500;
+const SCANNER_TRAILING_SUPPRESS_MS = 500;
 const ADMIN_MENU_LEVELS = {
   PIN: "PIN",
   MAIN: "MAIN",
@@ -104,6 +110,8 @@ export default function App() {
   const resetTimerRef = useRef(null);
   const scannerBufferRef = useRef("");
   const scannerTimerRef = useRef(null);
+  const scannerSuppressRef = useRef(false);
+  const scannerSuppressTimerRef = useRef(null);
 
   const selectedFunction = useMemo(() => getFunctionKeyByEvent(selectedEventType), [selectedEventType]);
 
@@ -174,9 +182,25 @@ export default function App() {
     setPendingCount(getOfflineQueueStats().pending);
   }, []);
 
+  const clearScannerSuppression = useCallback(() => {
+    window.clearTimeout(scannerSuppressTimerRef.current);
+    scannerSuppressRef.current = false;
+  }, []);
+
+  const suppressScannerTail = useCallback(() => {
+    scannerSuppressRef.current = true;
+    scannerBufferRef.current = "";
+    window.clearTimeout(scannerSuppressTimerRef.current);
+    scannerSuppressTimerRef.current = window.setTimeout(() => {
+      scannerSuppressRef.current = false;
+      scannerBufferRef.current = "";
+    }, SCANNER_TRAILING_SUPPRESS_MS);
+  }, []);
+
   const resetToIdle = useCallback(() => {
     window.clearTimeout(resetTimerRef.current);
     window.clearTimeout(scannerTimerRef.current);
+    clearScannerSuppression();
     scannerBufferRef.current = "";
     setTerminalState(TERMINAL_STATES.IDLE);
     setSelectedEventType(null);
@@ -188,7 +212,7 @@ export default function App() {
     setAdminState(adminInitialState);
     setLcdLines(["SELECCIONE ACCION"]);
     refreshQueueStats();
-  }, [refreshQueueStats]);
+  }, [clearScannerSuppression, refreshQueueStats]);
 
   const finishAfterDelay = useCallback(
     (state, lines, nextVoucher = null) => {
@@ -212,6 +236,7 @@ export default function App() {
   );
 
   const promptForRut = useCallback((eventType) => {
+    clearScannerSuppression();
     setVoucher(null);
     setSelectedEventType(eventType);
     setRutInput("");
@@ -220,17 +245,16 @@ export default function App() {
     setInputMethod("MANUAL_RUT");
     setTerminalState(TERMINAL_STATES.WAITING_RUT);
     setLcdLines([EVENT_LCD_LABELS[eventType], "RUT:"]);
-  }, []);
+  }, [clearScannerSuppression]);
 
-  const confirmRut = useCallback(
-    (source = "MANUAL_RUT", rawScan = "") => {
-      const parsedRun = source === "QR_CEDULA_SCANNER" ? extractRunFromScan(rawScan) : parseManualRun(rutInput);
+  const confirmParsedRun = useCallback(
+    (parsedRun, source = "MANUAL_RUT") => {
       scannerBufferRef.current = "";
       window.clearTimeout(scannerTimerRef.current);
 
       if (!parsedRun.ok) {
         showError(ERROR_CODES.RUN_INVALID);
-        return;
+        return false;
       }
 
       setRutInput(parsedRun.run);
@@ -239,8 +263,22 @@ export default function App() {
       setPin("");
       setTerminalState(TERMINAL_STATES.WAITING_PIN);
       setLcdLines([`RUT ${parsedRun.run}`, "PIN:"]);
+
+      if (source === "QR_CEDULA_SCANNER") {
+        suppressScannerTail();
+      }
+
+      return true;
     },
-    [rutInput, showError]
+    [showError, suppressScannerTail]
+  );
+
+  const confirmRut = useCallback(
+    (source = "MANUAL_RUT", rawScan = "") => {
+      const parsedRun = source === "QR_CEDULA_SCANNER" ? extractRunFromScan(rawScan) : parseManualRun(rutInput);
+      return confirmParsedRun(parsedRun, source);
+    },
+    [confirmParsedRun, rutInput]
   );
 
   const processScannerBuffer = useCallback(() => {
@@ -251,8 +289,8 @@ export default function App() {
     }
 
     playButtonBeep();
-    confirmRut("QR_CEDULA_SCANNER", scanText);
-  }, [confirmRut]);
+    confirmParsedRun(extractRunFromScan(scanText), "QR_CEDULA_SCANNER");
+  }, [confirmParsedRun]);
 
   const appendRutCharacter = useCallback((value) => {
     setRutInput((current) => formatManualRunInput(`${current}${value}`));
@@ -641,6 +679,7 @@ export default function App() {
     return () => {
       window.clearTimeout(resetTimerRef.current);
       window.clearTimeout(scannerTimerRef.current);
+      window.clearTimeout(scannerSuppressTimerRef.current);
     };
   }, []);
 
@@ -659,6 +698,12 @@ export default function App() {
           playAdminExitBeep();
         }
         resetToIdle();
+        return;
+      }
+
+      if (scannerSuppressRef.current && (event.key === "Enter" || event.key === "Tab" || event.key.length === 1)) {
+        event.preventDefault();
+        suppressScannerTail();
         return;
       }
 
@@ -722,6 +767,14 @@ export default function App() {
         if (event.key.length === 1) {
           event.preventDefault();
           scannerBufferRef.current += event.key;
+
+          const parsedScannerRun = extractRunFromActiveScanBuffer(scannerBufferRef.current);
+          if (parsedScannerRun.ok) {
+            playButtonBeep();
+            confirmParsedRun(parsedScannerRun, "QR_CEDULA_SCANNER");
+            return;
+          }
+
           window.clearTimeout(scannerTimerRef.current);
           scannerTimerRef.current = window.setTimeout(processScannerBuffer, SCANNER_IDLE_TIMEOUT_MS);
         }
@@ -762,11 +815,13 @@ export default function App() {
     appendRutCharacter,
     clearCurrentField,
     confirmPin,
+    confirmParsedRun,
     handleDigit,
     handleFunction,
     handleOk,
     processScannerBuffer,
     resetToIdle,
+    suppressScannerTail,
     terminalState
   ]);
 
