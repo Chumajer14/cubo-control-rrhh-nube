@@ -78,6 +78,23 @@ function buildResult(runNumber, dv) {
   };
 }
 
+function buildFirstRunFromCompact(value) {
+  const compact = String(value ?? "")
+    .toUpperCase()
+    .replace(/[^0-9K]/g, "");
+
+  if (compact.length < 8) {
+    return { ok: false, error: "RUN_NO_DETECTADO" };
+  }
+
+  const match = compact.match(/^([0-9]{7,8})([0-9K])/);
+  if (!match) {
+    return { ok: false, error: "RUN_NO_DETECTADO" };
+  }
+
+  return buildResult(match[1], match[2]);
+}
+
 export function parseManualRun(rawText) {
   const compact = String(rawText ?? "")
     .toUpperCase()
@@ -93,6 +110,17 @@ export function parseManualRun(rawText) {
 export function extractRunFromScan(rawText) {
   // The full QR payload can contain sensitive data. This parser only returns RUN parts.
   const text = normalizeScanText(rawText);
+
+  const runIndex = text.indexOf("run");
+  if (runIndex >= 0) {
+    const runSegment = text
+      .slice(runIndex + 3)
+      .split(/type|serial|mrz|cedula|documento|fecha/)[0];
+    const scopedResult = buildFirstRunFromCompact(runSegment);
+    if (scopedResult.ok) {
+      return scopedResult;
+    }
+  }
 
   const registroCivilRunMatch = text.match(/docstatus[-_/]?run[^0-9]{0,18}([0-9]{7,8})[^0-9a-z]?([0-9k])/i);
   if (registroCivilRunMatch) {

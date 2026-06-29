@@ -28,7 +28,7 @@ import { extractRunFromScan, formatManualRunInput, parseManualRun } from "./util
 
 const MAX_PIN_LENGTH = 8;
 const MAX_ADMIN_PIN_LENGTH = 12;
-const SCANNER_IDLE_TIMEOUT_MS = 180;
+const SCANNER_IDLE_TIMEOUT_MS = 700;
 const ADMIN_MENU_LEVELS = {
   PIN: "PIN",
   MAIN: "MAIN",

@@ -18,14 +18,39 @@ export function normalizeApiBaseUrl(url) {
   return String(url ?? "").trim().replace(/\/+$/, "");
 }
 
+function normalizeTerminalMode(mode) {
+  return mode === "LOCAL_MOCK" || mode === "MOCK_TEST" ? "LOCAL_MOCK" : "API";
+}
+
+function normalizeStoredApiBaseUrl(url, mode) {
+  const normalizedUrl = normalizeApiBaseUrl(url || DEFAULT_API_BASE_URL);
+
+  if (normalizeTerminalMode(mode) !== "API") {
+    return normalizedUrl;
+  }
+
+  if (
+    !normalizedUrl ||
+    normalizedUrl.includes("localhost") ||
+    normalizedUrl.includes("127.0.0.1") ||
+    normalizedUrl.includes("0.0.0.0")
+  ) {
+    return DEFAULT_API_BASE_URL;
+  }
+
+  return normalizedUrl;
+}
+
 function normalizeTerminalConfig(config) {
+  const mode = normalizeTerminalMode(config?.mode);
+
   return {
     ...defaultTerminalConfig,
     ...config,
     terminalCode: String(config?.terminalCode ?? defaultTerminalConfig.terminalCode).trim().toUpperCase(),
     terminalName: String(config?.terminalName ?? defaultTerminalConfig.terminalName).trim(),
-    apiBaseUrl: normalizeApiBaseUrl(config?.apiBaseUrl ?? defaultTerminalConfig.apiBaseUrl),
-    mode: config?.mode === "LOCAL_MOCK" ? "LOCAL_MOCK" : "API",
+    apiBaseUrl: normalizeStoredApiBaseUrl(config?.apiBaseUrl ?? defaultTerminalConfig.apiBaseUrl, mode),
+    mode,
     terminalSyncToken: String(config?.terminalSyncToken ?? defaultTerminalConfig.terminalSyncToken)
   };
 }
