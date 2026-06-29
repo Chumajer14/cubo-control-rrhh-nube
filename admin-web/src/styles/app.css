@@ -133,6 +133,10 @@ input, select {
   grid-template-columns: repeat(3, minmax(160px, 1fr));
 }
 
+.stats-grid.compact {
+  grid-template-columns: repeat(6, minmax(150px, 1fr));
+}
+
 .stat-card, .content-band, .login-panel {
   background: #fff;
   border: 1px solid #d9e2ea;
@@ -236,6 +240,87 @@ input, select {
 .badge.danger {
   background: #ffe4de;
   color: #b42318;
+}
+
+.badge.info {
+  background: #e0f2fe;
+  color: #075985;
+}
+
+.dashboard-section {
+  display: grid;
+  gap: 12px;
+}
+
+.section-heading {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 14px;
+  margin-bottom: 14px;
+}
+
+.section-heading p {
+  margin: 8px 0 0;
+  color: #53677a;
+  line-height: 1.5;
+}
+
+.section-stack {
+  display: grid;
+  gap: 12px;
+}
+
+.alert-list {
+  display: grid;
+  gap: 12px;
+}
+
+.alert-item {
+  border: 1px solid #edf2f6;
+  border-radius: 8px;
+  padding: 14px;
+  background: #fbfdff;
+}
+
+.alert-item-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.alert-item-head span:last-child {
+  margin-left: auto;
+  color: #607489;
+  font-size: 12px;
+}
+
+.alert-item p {
+  margin: 10px 0 6px;
+  color: #33475b;
+}
+
+.alert-item small, .fine-print {
+  color: #607489;
+  line-height: 1.5;
+}
+
+.ai-rag-panel {
+  border-left: 4px solid #1d6fb8;
+}
+
+.rag-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.2fr) minmax(260px, 0.8fr);
+  gap: 18px;
+}
+
+.compact-list {
+  margin: 10px 0 0;
+  padding-left: 20px;
+  color: #33475b;
+  line-height: 1.7;
 }
 
 .primary-button, .secondary-button {
@@ -408,7 +493,7 @@ input, select {
     position: static;
   }
 
-  .nav, .stats-grid, .stats-grid.three, .filters-grid, .filters-grid.compact, .form-grid, .compliance-grid {
+  .nav, .stats-grid, .stats-grid.three, .stats-grid.compact, .filters-grid, .filters-grid.compact, .form-grid, .compliance-grid, .rag-grid {
     grid-template-columns: 1fr;
   }
 
@@ -419,5 +504,9 @@ input, select {
 
   .user-menu {
     text-align: left;
+  }
+
+  .section-heading {
+    display: grid;
   }
 }
