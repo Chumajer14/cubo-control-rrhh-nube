@@ -47,3 +47,21 @@ npm run build
 ```
 
 El repo `infra` toma el build desde `../cubo/admin-web/dist` o desde `ADMIN_WEB_DIST_PATH`.
+
+## Integracion API
+
+La consola usa `VITE_API_BASE_URL` para consumir API Gateway. En local puede apuntar a la API publicada o a un endpoint de pruebas compatible con las rutas `/admin/*`.
+
+## Despliegue AWS
+
+El despliegue se ejecuta desde el repo `infra`, no desde este repo:
+
+```powershell
+cd C:\Users\elise\source\repos\infra
+$env:ADMIN_WEB_DIST_PATH="C:\Users\elise\source\repos\cubo\admin-web\dist"
+npx.cmd cdk synth
+npx.cmd cdk diff
+npx.cmd cdk deploy
+```
+
+Cuando existan los outputs `CognitoUserPoolId` y `CognitoClientId`, actualizar `admin-web/.env.production`, reconstruir con `npm run build` y redeplegar desde `infra` para publicar el bundle con Cognito real.
