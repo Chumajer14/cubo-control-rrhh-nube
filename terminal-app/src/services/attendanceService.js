@@ -215,7 +215,8 @@ export async function registerAttendanceEventApi({
     pin: normalizedPin,
     eventType,
     terminalCode: normalizedTerminalCode,
-    timestamp
+    timestamp,
+    inputMethod
   };
 
   try {

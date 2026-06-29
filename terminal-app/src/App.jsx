@@ -65,6 +65,9 @@ function getFunctionKeyByEvent(eventType) {
 
 function shouldTreatBufferAsScan(buffer) {
   const value = String(buffer ?? "").toLowerCase();
+  if (/[¿ñ]/.test(value)) {
+    return true;
+  }
   return value.includes("run") || value.includes("http") || /[?&=¿'/:]/.test(value) || value.length > 12;
 }
 
@@ -562,6 +565,14 @@ export default function App() {
     }
   }, [appendRutCharacter, terminalState]);
 
+  const handleRutScanText = useCallback(
+    (scanText) => {
+      scannerBufferRef.current = scanText;
+      confirmRut("QR_CEDULA_SCANNER", scanText);
+    },
+    [confirmRut]
+  );
+
   useEffect(() => {
     const timerId = window.setInterval(() => setNow(new Date()), 1000);
     return () => window.clearInterval(timerId);
@@ -683,6 +694,10 @@ export default function App() {
       }
 
       if (terminalState === TERMINAL_STATES.WAITING_RUT || terminalState === TERMINAL_STATES.ACTION_SELECTED) {
+        if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "v") {
+          return;
+        }
+
         if (event.key === "Enter") {
           event.preventDefault();
           handleOk();
@@ -705,7 +720,7 @@ export default function App() {
         if (event.key.length === 1) {
           event.preventDefault();
           scannerBufferRef.current += event.key;
-          if (/^[0-9kK-]$/.test(event.key)) {
+          if (!shouldTreatBufferAsScan(scannerBufferRef.current) && /^[0-9kK-]$/.test(event.key)) {
             appendRutCharacter(event.key);
           }
           window.clearTimeout(scannerTimerRef.current);
@@ -755,6 +770,31 @@ export default function App() {
     resetToIdle,
     terminalState
   ]);
+
+  useEffect(() => {
+    function handlePaste(event) {
+      if (terminalState !== TERMINAL_STATES.WAITING_RUT && terminalState !== TERMINAL_STATES.ACTION_SELECTED) {
+        return;
+      }
+
+      const pastedText = event.clipboardData?.getData("text") || "";
+      if (!pastedText) {
+        return;
+      }
+
+      event.preventDefault();
+
+      if (shouldTreatBufferAsScan(pastedText)) {
+        handleRutScanText(pastedText);
+        return;
+      }
+
+      setRutInput(formatManualRunInput(pastedText));
+    }
+
+    window.addEventListener("paste", handlePaste);
+    return () => window.removeEventListener("paste", handlePaste);
+  }, [handleRutScanText, terminalState]);
 
   return (
     <main className="terminal-shell">

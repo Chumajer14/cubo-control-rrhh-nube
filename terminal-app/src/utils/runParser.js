@@ -94,6 +94,11 @@ export function extractRunFromScan(rawText) {
   // The full QR payload can contain sensitive data. This parser only returns RUN parts.
   const text = normalizeScanText(rawText);
 
+  const registroCivilRunMatch = text.match(/docstatus[-_/]?run[^0-9]{0,18}([0-9]{7,8})[^0-9a-z]?([0-9k])/i);
+  if (registroCivilRunMatch) {
+    return buildResult(registroCivilRunMatch[1], registroCivilRunMatch[2]);
+  }
+
   const queryRunMatch = text.match(/[?&]run=([0-9]{7,8})[-']?([0-9k])(?:&|$)/i);
   if (queryRunMatch) {
     return buildResult(queryRunMatch[1], queryRunMatch[2]);
