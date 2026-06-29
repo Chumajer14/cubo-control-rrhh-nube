@@ -1,223 +1,277 @@
 # CUBO Terminal
 
-CUBO Terminal es la aplicacion de escritorio del reloj control de CUBO. Funciona como una aplicacion para Windows construida con Electron, React y Vite, con interfaz de terminal fisico, pantalla LED simulada, pad numerico, teclas F1-F6 y soporte para modo `API` o `LOCAL_MOCK`.
+CUBO Terminal es una aplicacion de escritorio Electron + React que simula un reloj control fisico simple: carcasa gris, pantalla LCD verde, botones F1-F6 al costado, teclado numerico, tecla `C`, tecla `K` y tecla `OK`.
 
-Por defecto, el terminal opera en modo `API` y envia marcajes a AWS API Gateway. Si no hay conexion, guarda un evento pendiente local sin PIN, QR completo, MRZ ni serial. El modo `LOCAL_MOCK` sigue disponible para pruebas sin AWS.
+No es un dashboard. La interfaz esta pensada para uso tipo kiosco en un PC con scanner QR de cedula o ingreso manual de RUT.
 
-## Objetivo del MVP
+## Teclas F1-F6
 
-- Ejecutar un terminal de marcaje local en un PC.
-- Simular un reloj control fisico en modo kiosco.
-- Registrar ingreso, salida, vale de almuerzo, inicio de almuerzo y fin de almuerzo.
-- Validar empleados ficticios y reglas minimas de duplicidad.
-- Enviar eventos reales a AWS API Gateway en modo `API`.
-- Guardar pendientes locales solo ante fallos de conexion.
-- Mantener modo `LOCAL_MOCK` para validacion demo sin AWS.
+- `F1`: INGRESO / ENTRA A TURNO.
+- `F2`: SALIDA / SALE DE TURNO.
+- `F3`: VALE_ALMUERZO / VALE COLACION.
+- `F4`: INICIO_ALMUERZO / INICIO COLACION.
+- `F5`: FIN_ALMUERZO / FIN COLACION.
+- `F6`: ADMIN.
 
-## Instalacion
+## Flujo QR
 
-```bash
-cd terminal-app
-npm install
+1. Presionar `F1` a `F5`.
+2. La pantalla muestra la accion y `RUT:`.
+3. Escanear QR de cedula.
+4. El terminal extrae solo el RUN/RUT.
+5. El texto completo del QR se descarta; no se guarda URL, MRZ ni serial.
+6. La pantalla solicita `PIN:`.
+7. Confirmar con `OK` o `Enter`.
+
+## Flujo Manual RUT
+
+1. Presionar `F1` a `F5`.
+2. Ingresar RUT con numeros y `K` si corresponde.
+3. Puede ingresarse con o sin guion.
+4. Confirmar con `OK` o `Enter`.
+5. El terminal normaliza internamente a formato `12345678-5`.
+6. Si el formato o digito verificador no es valido, muestra `ERROR-06 RUT INVALIDO`.
+
+## Flujo PIN
+
+El PIN se ingresa despues de identificar el RUT. En modo `API`, el PIN viaja por HTTPS a AWS para validacion. En modo offline no se guarda PIN en la cola local.
+
+## Boucher Impreso Simulado
+
+Despues de una marcacion online u offline exitosa, aparece un papel termico simulado con:
+
+- CUBO CONTROL.
+- BOUCHER IMPRESO.
+- Empleado.
+- RUT.
+- Fecha.
+- Hora.
+- Accion.
+- Terminal.
+- Estado.
+- Sincronizacion, si queda pendiente.
+
+El boucher es solo visual. No integra impresora real.
+
+## Errores ERROR-XX
+
+- `ERROR-01 CONTACTE A RRHH`: empleado no encontrado.
+- `ERROR-02 PIN INCORRECTO`: clave invalida.
+- `ERROR-03 EMPLEADO INACTIVO`: trabajador desactivado.
+- `ERROR-04 TERMINAL NO AUTORIZADO`: terminal no existe o esta inactivo.
+- `ERROR-05 MARCACION NO PERMITIDA`: duplicidad o secuencia incorrecta.
+- `ERROR-06 RUT INVALIDO`: RUT mal ingresado o QR sin RUN extraible.
+- `ERROR-07 SIN COMUNICACION API`: API sin respuesta; se registra offline.
+- `ERROR-08 ERROR DE SINCRONIZACION`: fallo de sincronizacion offline.
+- `ERROR-09 CONFIGURACION TERMINAL`: falta `terminalCode`, `apiBaseUrl` o modo valido.
+- `ERROR-10 ERROR INTERNO`: error no controlado.
+
+Los errores de validacion online bloquean la marcacion. La falta de comunicacion con API no bloquea: registra offline y emite boucher.
+
+## Modo Offline
+
+Si no hay internet, hay timeout de 5 segundos, falla `fetch`, cae la API o responde `5xx`, el terminal:
+
+1. Guarda un evento offline local.
+2. No guarda PIN.
+3. No guarda QR completo, MRZ ni serial.
+4. Muestra mensaje OK offline en LCD.
+5. Emite boucher con estado `REGISTRADO OFFLINE`.
+
+La cola guarda:
+
+- `offlineEventId`
+- `run`
+- `eventType`
+- `terminalCode`
+- `timestamp`
+- `localDate`
+- `localTime`
+- `syncStatus`
+- `source`
+- `inputMethod`
+- `offline`
+
+## Cola Offline
+
+La cola esta aislada en `src/services/offlineQueueService.js` y usa `localStorage` para el MVP. Funciones disponibles:
+
+- `enqueueOfflineEvent(event)`
+- `getPendingEvents()`
+- `markEventAsSynced(offlineEventId)`
+- `markEventAsFailed(offlineEventId, reason)`
+- `removeOfflineEvent(offlineEventId)`
+- `clearOfflineQueue()`
+- `getOfflineQueueStats()`
+
+## Sincronizacion Progresiva
+
+`src/services/syncService.js` intenta sincronizar cada 15 segundos en lotes pequenos. No bloquea la interfaz. El indicador muestra:
+
+- `ONLINE`
+- `OFFLINE`
+- `SINCRONIZANDO`
+- `PENDIENTES: N`
+
+Los eventos offline se envian sin PIN usando `POST /attendance/sync` y header `x-terminal-token`.
+
+## Conexion AWS
+
+API base:
+
+```text
+https://cs0w4vtu5a.execute-api.us-east-1.amazonaws.com
 ```
 
-## Desarrollo
+Endpoint online existente:
 
-Ejecutar solo la interfaz React:
-
-```bash
-npm run dev
+```text
+POST /attendance/mark
 ```
 
-Ejecutar Electron con Vite:
-
-```bash
-npm run electron:dev
-```
-
-## Build y ejecutable Windows
-
-```bash
-npm run build
-npm run dist
-```
-
-`npm run dist` compila el renderer en `terminal-app/dist/renderer/` y genera un ejecutable Windows desempaquetado en `terminal-app/dist/win-unpacked/CUBO Control Terminal.exe` usando `electron-builder`.
-
-## Teclas funcionales
-
-- `F1`: selecciona ingreso.
-- `F2`: selecciona salida.
-- `F3`: selecciona vale de almuerzo.
-- `F4`: selecciona inicio de almuerzo.
-- `F5`: selecciona fin de almuerzo.
-- `F6`: modo administrador.
-- `0` a `9`: ingresan PIN solo cuando el terminal lo solicita.
-- `Backspace`: borra el ultimo digito del PIN.
-- `Escape`: cancela la operacion actual.
-- `Enter`: confirma el PIN.
-
-## Escaneo de QR de cedula
-
-La pistola scanner actua como teclado fisico. El flujo de marcaje es:
-
-1. Seleccionar accion con `F1` a `F5`.
-2. Escanear el QR de cedula.
-3. Extraer solo el RUN desde el texto recibido.
-4. Ingresar PIN del empleado.
-5. Enviar el evento a AWS o registrar localmente si el modo es `LOCAL_MOCK`.
-
-El terminal no consulta Registro Civil, no guarda la URL completa, no guarda MRZ, no guarda numero de serie y no persiste el texto crudo del QR. El buffer de scanner se usa solo para extraer el RUN y se limpia inmediatamente.
-
-Los datos usados en este MVP son ficticios. En produccion, el RUN debe tratarse como dato personal; el backend debe validar permisos, cifrar datos en transito y aplicar controles de proteccion de datos. El PIN tampoco debe almacenarse en texto plano: debe validarse contra un backend seguro usando hash y politicas de rotacion.
-
-## Datos demo
-
-La lista mock esta en `src/data/mockEmployees.js` e incluye seis empleados ficticios con RUN valido y PIN demo:
-
-- `12345678-5` Juan Perez, Administracion, activo, PIN `1234`.
-- `11111111-1` Maria Gonzalez, RR.HH., activo, PIN `2345`.
-- `22222222-2` Carlos Rojas, Operaciones, activo, PIN `3456`.
-- `33333333-3` Ana Soto, Finanzas, activo, PIN `4567`.
-- `44444444-4` Pedro Morales, Soporte, inactivo, PIN `5678`.
-- `55555555-5` Camila Herrera, Bodega, activo, PIN `6789`.
-
-No se usan RUN reales, cedulas, numeros de serie reales, MRZ ni datos personales reales.
-
-## Modo administrador
-
-`F6` abre el modo administrador. El PIN tecnico demo es `123456`.
-
-Opciones disponibles:
-
-- Ver configuracion del terminal.
-- Cambiar codigo del terminal.
-- Cambiar nombre del terminal.
-- Cambiar URL base de API.
-- Cambiar modo entre `LOCAL_MOCK` y `API`.
-- Probar que la URL de API tenga formato valido.
-- Ver eventos locales pendientes.
-- Reintentar sincronizacion muestra que el pendiente requiere revalidacion de PIN.
-- Limpiar eventos locales demo.
-- Restaurar configuracion por defecto.
-- Salir del modo admin.
-
-El PIN demo no es un secreto real y solo existe para el MVP local.
-
-## Eventos locales
-
-Los eventos se guardan en `localStorage` con esta estructura:
+Payload:
 
 ```json
 {
-  "id": "uuid",
-  "employeeRun": "12345678-5",
-  "employeeName": "Juan Perez",
-  "employeeArea": "Administracion",
-  "terminalCode": "TERM-001",
-  "terminalName": "Entrada Principal",
+  "run": "12345678-5",
+  "pin": "1234",
   "eventType": "INGRESO",
-  "eventLabel": "Ingreso",
-  "timestamp": "2026-06-28T08:45:22.000Z",
-  "localDate": "2026-06-28",
-  "localTime": "08:45:22",
-  "source": "TERMINAL_PC",
-  "inputMethod": "QR_CEDULA_SCANNER",
-  "deviceMode": "KIOSK",
-  "syncStatus": "LOCAL_ONLY"
+  "terminalCode": "TERM-001",
+  "timestamp": "2026-06-28T08:45:22.000Z"
 }
 ```
 
-En modo `LOCAL_MOCK`, el estado queda como `LOCAL_ONLY`. En modo `API`, el servicio intenta publicar en `${apiBaseUrl}/attendance/mark`; si falla la conexion, guarda un evento como `PENDING` sin PIN. Los pendientes no se reenvian automaticamente porque requieren revalidacion de PIN.
-
-## Reglas de marcaje
-
-- No registra si no hay RUN extraido.
-- No registra si el RUN tiene formato o digito verificador invalido.
-- No registra empleados inexistentes.
-- No registra empleados inactivos.
-- No registra PIN incorrecto.
-- No registra eventos desconocidos.
-- No registra si el terminal no tiene codigo configurado.
-- No permite dos ingresos seguidos sin salida.
-- No permite salida sin ingreso previo.
-- No permite dos inicios de almuerzo seguidos sin fin de almuerzo.
-- No permite fin de almuerzo sin inicio previo.
-- Permite un vale de almuerzo por dia por empleado.
-
-## Conexion con AWS
-
-El terminal se conecta a AWS API Gateway usando:
+Endpoints de soporte requeridos por el terminal:
 
 ```text
-POST https://cs0w4vtu5a.execute-api.us-east-1.amazonaws.com/attendance/mark
+GET /health
+POST /attendance/sync
 ```
 
-API Gateway invoca una Lambda que valida empleado, PIN, terminal y reglas de evento. DynamoDB guarda el registro de asistencia en la tabla `cubo-dev-attendance-events`.
+`GET /health` permite probar conexion sin crear marcajes falsos.
 
-El terminal no consulta Registro Civil. Solo extrae el RUN desde el texto recibido por el scanner de QR y descarta el contenido crudo. El PIN viaja por HTTPS hacia la API para validacion del backend.
+`POST /attendance/sync` debe recibir eventos offline sin PIN:
 
-En una version productiva se debe mejorar la autenticacion del terminal con API Key, token de terminal, Cognito o firma segura. El PIN no debe gestionarse en frontend ni aparecer en logs. Tambien deben aplicarse controles formales de proteccion de datos personales, auditoria y retencion.
+```json
+{
+  "terminalCode": "TERM-001",
+  "events": [
+    {
+      "offlineEventId": "uuid",
+      "run": "12345678-5",
+      "eventType": "INGRESO",
+      "timestamp": "2026-06-28T08:45:22.000Z",
+      "inputMethod": "QR_CEDULA_SCANNER",
+      "offline": true
+    }
+  ]
+}
+```
 
-## Variables/configuracion
+Debe validar `x-terminal-token`, terminal activo, empleado y tipo de evento. Debe usar `offlineEventId` para idempotencia y no duplicar registros.
 
-La app funciona aunque no exista `.env`, usando configuracion por defecto guardada en `localStorage`.
+No hay carpeta `infra` en este checkout. El cliente queda listo para `/health` y `/attendance/sync`; los cambios CDK/Lambda deben agregarse en el repositorio de infraestructura correspondiente antes de desplegar.
 
-- `apiBaseUrl`: URL base de API Gateway. Valor por defecto: `https://cs0w4vtu5a.execute-api.us-east-1.amazonaws.com`.
-- `terminalCode`: codigo del terminal. Valor por defecto: `TERM-001`.
-- `terminalName`: nombre visible del terminal. Valor por defecto: `Entrada Principal`.
-- `mode`: `API` o `LOCAL_MOCK`. Valor por defecto: `API`.
+## Configuracion
 
-Variables Vite opcionales en `terminal-app/.env`:
+Valores por defecto:
+
+```json
+{
+  "terminalCode": "TERM-001",
+  "terminalName": "Entrada Principal",
+  "branch": "Casa Matriz",
+  "apiBaseUrl": "https://cs0w4vtu5a.execute-api.us-east-1.amazonaws.com",
+  "mode": "API",
+  "adminPin": "123456",
+  "terminalSyncToken": "cubo-dev-terminal-token"
+}
+```
+
+Variables opcionales:
 
 ```env
 VITE_API_BASE_URL=https://cs0w4vtu5a.execute-api.us-east-1.amazonaws.com
 VITE_TERMINAL_CODE=TERM-001
 VITE_TERMINAL_NAME=Entrada Principal
 VITE_TERMINAL_MODE=API
+VITE_TERMINAL_SYNC_TOKEN=cubo-dev-terminal-token
 ```
 
-`apiBaseUrl` se normaliza eliminando `/` finales antes de concatenar `/attendance/mark`.
+El token demo no es un secreto real. En produccion debe reemplazarse por API Key, token de terminal robusto, Cognito o firma segura.
 
-## Prueba con AWS
+## Modo Admin
 
-1. Ejecutar terminal:
+`F6` abre modo admin. PIN demo: `123456`.
 
-   ```bash
-   npm run electron:dev
-   ```
+Permite:
 
-2. Verificar que este en modo `API`.
-3. Presionar `F1`.
-4. Escanear o ingresar un QR de prueba que contenga `run=12345678-5`.
-5. Ingresar PIN `1234`.
-6. Confirmar con `Enter`.
-7. Debe aparecer `INGRESO REGISTRADO`.
-8. Verificar en DynamoDB: `cubo-dev-attendance-events`.
+- Ver API base URL.
+- Ver terminal code.
+- Ver modo actual.
+- Ver estado online/offline.
+- Ver cantidad de pendientes.
+- Probar `GET /health`.
+- Reintentar sincronizacion.
+- Limpiar cola offline demo.
+- Cambiar API URL.
+- Cambiar modo `API` / `LOCAL_MOCK`.
 
-Pruebas funcionales esperadas:
+No muestra PIN de trabajador ni QR completo.
 
-- `F1`, RUN `12345678-5`, PIN `1234`: `INGRESO REGISTRADO`.
-- Repetir `F1` con el mismo RUN: `INGRESO YA REGISTRADO`.
-- `F2` despues de `F1`: `SALIDA REGISTRADA`.
-- PIN incorrecto: `PIN INCORRECTO`.
-- RUN inexistente: `EMPLEADO NO ENCONTRADO`.
-- URL invalida o sin conexion: `SIN CONEXION - EVENTO GUARDADO PENDIENTE`.
-- Modo `LOCAL_MOCK`: debe seguir funcionando sin AWS.
+## Seguridad y Privacidad
 
-## Limitaciones actuales
+- No consulta Registro Civil.
+- No guarda QR completo.
+- No guarda MRZ.
+- No guarda serial.
+- No guarda PIN en cola offline.
+- No imprime PIN ni QR completo en consola.
+- No contiene secretos reales.
 
-- No existe endpoint health; la prueba de conexion valida formato de URL y no genera marcajes falsos.
-- No existe sincronizacion automatica de pendientes porque no se almacena PIN.
-- No existe login RR.HH.
-- No existe dashboard administrativo.
-- No existe biometria ni lectura de cedulas.
-- No declara cumplimiento legal ni certificacion.
+El RUN es dato personal y debe tratarse con controles de proteccion, auditoria, minimizacion y retencion. En produccion el PIN no debe gestionarse en frontend ni en logs.
 
-## Proximos pasos
+## Desarrollo
 
-- Crear cola offline persistente fuera de `localStorage`.
-- Agregar configuracion segura del terminal.
-- Implementar API de asistencia y sincronizacion.
-- Agregar actualizacion remota de configuracion.
-- Endurecer auditoria, logs y monitoreo del terminal.
+```bash
+npm install
+npm run electron:dev
+```
+
+## Build Windows
+
+```bash
+npm run build
+npm run dist
+```
+
+`npm run dist` genera el ejecutable Windows con `electron-builder`.
+
+## Pruebas Manuales
+
+1. `F1` + QR valido + PIN correcto + API online: muestra `INGRESADO EXITOSAMENTE - OK`, imprime boucher y registra en DynamoDB.
+2. `F1` + RUT manual + PIN correcto + API online: mismo flujo que QR.
+3. PIN incorrecto: muestra `ERROR-02 PIN INCORRECTO` y no imprime boucher exitoso.
+4. RUN no registrado: muestra `ERROR-01 CONTACTE A RRHH`.
+5. URL invalida o API caida: muestra `OK INGRESO - REGISTRADO OFFLINE`, imprime boucher offline y guarda pendiente sin PIN.
+6. Recuperar conexion: sincroniza pendientes progresivamente y marca `SYNCED` si AWS responde OK.
+7. `F2`, `F3`, `F4`, `F5`: mismo flujo.
+8. `F6 Admin`: muestra configuracion, conexion y eventos pendientes.
+9. `npm run electron:dev` funciona.
+10. `npm run dist` genera `.exe`.
+
+## Limitaciones MVP
+
+- No integra impresora real.
+- La cola offline usa `localStorage`.
+- `/health` y `/attendance/sync` deben existir en AWS para health check y sincronizacion real.
+- El token de sincronizacion es demo.
+- No incluye dashboard RR.HH.
+
+## Proximos Pasos
+
+- Implementar `/health` y `/attendance/sync` en infraestructura AWS.
+- Reemplazar token demo por autenticacion robusta.
+- Migrar cola offline a SQLite o almacenamiento local cifrado.
+- Agregar auditoria formal de sincronizacion.
+- Agregar monitoreo y actualizacion remota de configuracion del terminal.

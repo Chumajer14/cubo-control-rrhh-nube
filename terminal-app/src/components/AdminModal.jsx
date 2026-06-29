@@ -1,5 +1,11 @@
 import { useMemo, useState } from "react";
-import { clearLocalEvents, deleteLocalEvent, getLocalEvents, getPendingEvents } from "../services/attendanceService";
+import {
+  clearOfflineQueue,
+  getOfflineQueue,
+  getOfflineQueueStats,
+  removeOfflineEvent
+} from "../services/offlineQueueService";
+import { checkApiHealth } from "../services/syncService";
 import {
   normalizeApiBaseUrl,
   resetTerminalConfig,
@@ -8,15 +14,30 @@ import {
 import { formatEventDateTime } from "../utils/dateTime";
 import { maskRun } from "../utils/runParser";
 
-export default function AdminModal({ terminalConfig, onClose, onConfigChange, onAuthenticated }) {
+export default function AdminModal({
+  terminalConfig,
+  connectionStatus,
+  onClose,
+  onConfigChange,
+  onAuthenticated,
+  onSync
+}) {
   const [pin, setPin] = useState("");
   const [authenticated, setAuthenticated] = useState(false);
   const [error, setError] = useState("");
   const [configDraft, setConfigDraft] = useState(terminalConfig);
-  const [events, setEvents] = useState(() => getLocalEvents());
+  const [queue, setQueue] = useState(() => getOfflineQueue());
+  const [stats, setStats] = useState(() => getOfflineQueueStats());
   const [adminNotice, setAdminNotice] = useState("");
-  const latestEvents = useMemo(() => events.slice(0, 12), [events]);
-  const pendingEvents = useMemo(() => events.filter((event) => event.syncStatus === "PENDING"), [events]);
+  const pendingEvents = useMemo(
+    () => queue.filter((event) => event.syncStatus === "PENDING" || event.syncStatus === "FAILED"),
+    [queue]
+  );
+
+  function refreshQueue() {
+    setQueue(getOfflineQueue());
+    setStats(getOfflineQueueStats());
+  }
 
   function submitPin(event) {
     event.preventDefault();
@@ -42,36 +63,27 @@ export default function AdminModal({ terminalConfig, onClose, onConfigChange, on
     setAdminNotice("CONFIGURACION GUARDADA");
   }
 
-  function clearEvents() {
-    clearLocalEvents();
-    setEvents([]);
-    setAdminNotice("EVENTOS LOCALES ELIMINADOS");
+  async function testConnection() {
+    const health = await checkApiHealth(configDraft);
+    setAdminNotice(health.online ? "API ONLINE" : "API OFFLINE O SIN /HEALTH");
   }
 
-  function removeEvent(eventId) {
-    deleteLocalEvent(eventId);
-    setEvents(getLocalEvents());
-    setAdminNotice("EVENTO PENDIENTE ELIMINADO");
+  async function retrySync() {
+    await onSync();
+    refreshQueue();
+    setAdminNotice("SINCRONIZACION EJECUTADA");
   }
 
-  function testConnection() {
-    const normalizedUrl = normalizeApiBaseUrl(configDraft.apiBaseUrl);
-    try {
-      const parsedUrl = new URL(normalizedUrl);
-      if (!["http:", "https:"].includes(parsedUrl.protocol)) {
-        throw new Error("Invalid protocol");
-      }
-      setAdminNotice("API CONFIGURADA. PRUEBA REAL REQUIERE ENDPOINT DE HEALTH");
-    } catch {
-      setAdminNotice("URL API INVALIDA");
-    }
+  function clearQueue() {
+    clearOfflineQueue();
+    refreshQueue();
+    setAdminNotice("COLA OFFLINE LIMPIA");
   }
 
-  function changeMode(mode) {
-    setConfigDraft((current) => ({
-      ...current,
-      mode
-    }));
+  function removePending(offlineEventId) {
+    removeOfflineEvent(offlineEventId);
+    refreshQueue();
+    setAdminNotice("EVENTO OFFLINE ELIMINADO");
   }
 
   function restoreDefaults() {
@@ -79,21 +91,6 @@ export default function AdminModal({ terminalConfig, onClose, onConfigChange, on
     setConfigDraft(defaultConfig);
     onConfigChange(defaultConfig);
     setAdminNotice("CONFIGURACION POR DEFECTO RESTAURADA");
-  }
-
-  function refreshPendingEvents() {
-    const pending = getPendingEvents();
-    setEvents(getLocalEvents());
-    setAdminNotice(
-      pending.length
-        ? "EVENTO PENDIENTE REQUIERE REVALIDACION DE PIN"
-        : "SIN EVENTOS PENDIENTES"
-    );
-  }
-
-  function retrySync() {
-    setEvents(getLocalEvents());
-    setAdminNotice("EVENTO PENDIENTE REQUIERE REVALIDACION DE PIN");
   }
 
   return (
@@ -113,13 +110,13 @@ export default function AdminModal({ terminalConfig, onClose, onConfigChange, on
           <form className="admin-pin-panel" onSubmit={submitPin}>
             <label htmlFor="admin-pin">PIN TECNICO</label>
             <input
-              id="admin-pin"
               autoFocus
+              id="admin-pin"
               inputMode="numeric"
               maxLength={12}
+              onChange={(event) => setPin(event.target.value.replace(/\D/g, ""))}
               type="password"
               value={pin}
-              onChange={(event) => setPin(event.target.value.replace(/\D/g, ""))}
             />
             {error ? <div className="admin-error">{error}</div> : null}
             <button className="admin-primary-button" type="submit">
@@ -129,9 +126,21 @@ export default function AdminModal({ terminalConfig, onClose, onConfigChange, on
         ) : (
           <div className="admin-grid">
             <form className="admin-panel" onSubmit={saveConfig}>
-              <h3>CONFIGURACION DEL TERMINAL</h3>
+              <h3>CONFIGURACION</h3>
               <label>
-                Codigo del terminal
+                API Base URL
+                <input
+                  value={configDraft.apiBaseUrl}
+                  onChange={(event) =>
+                    setConfigDraft((current) => ({
+                      ...current,
+                      apiBaseUrl: event.target.value
+                    }))
+                  }
+                />
+              </label>
+              <label>
+                Terminal Code
                 <input
                   value={configDraft.terminalCode}
                   onChange={(event) =>
@@ -143,25 +152,13 @@ export default function AdminModal({ terminalConfig, onClose, onConfigChange, on
                 />
               </label>
               <label>
-                Nombre del terminal
+                Terminal Name
                 <input
                   value={configDraft.terminalName}
                   onChange={(event) =>
                     setConfigDraft((current) => ({
                       ...current,
                       terminalName: event.target.value
-                    }))
-                  }
-                />
-              </label>
-              <label>
-                URL base API
-                <input
-                  value={configDraft.apiBaseUrl}
-                  onChange={(event) =>
-                    setConfigDraft((current) => ({
-                      ...current,
-                      apiBaseUrl: event.target.value
                     }))
                   }
                 />
@@ -177,8 +174,8 @@ export default function AdminModal({ terminalConfig, onClose, onConfigChange, on
                     }))
                   }
                 >
-                  <option value="LOCAL_MOCK">LOCAL_MOCK</option>
                   <option value="API">API</option>
+                  <option value="LOCAL_MOCK">LOCAL_MOCK</option>
                 </select>
               </label>
               {adminNotice ? <div className="admin-notice">{adminNotice}</div> : null}
@@ -186,54 +183,45 @@ export default function AdminModal({ terminalConfig, onClose, onConfigChange, on
                 GUARDAR CONFIGURACION
               </button>
               <button className="admin-secondary-button" type="button" onClick={restoreDefaults}>
-                RESTAURAR CONFIGURACION POR DEFECTO
-              </button>
-              <button className="admin-secondary-button" type="button" onClick={clearEvents}>
-                LIMPIAR EVENTOS LOCALES DEMO
+                RESTAURAR DEFAULT
               </button>
             </form>
 
             <section className="admin-panel">
               <h3>CONEXION AWS</h3>
               <div className="admin-kv">
+                <span>Estado</span>
+                <strong>{connectionStatus}</strong>
+              </div>
+              <div className="admin-kv">
                 <span>Modo actual</span>
                 <strong>{configDraft.mode}</strong>
               </div>
               <div className="admin-kv">
-                <span>API Base URL</span>
-                <strong>{configDraft.apiBaseUrl}</strong>
+                <span>Pendientes</span>
+                <strong>{stats.pending}</strong>
               </div>
               <div className="admin-kv">
-                <span>Terminal Code</span>
+                <span>Terminal</span>
                 <strong>{configDraft.terminalCode}</strong>
               </div>
-              <div className="admin-kv">
-                <span>Terminal Name</span>
-                <strong>{configDraft.terminalName}</strong>
-              </div>
               <button className="admin-primary-button" type="button" onClick={testConnection}>
-                PROBAR CONEXION
+                PROBAR /HEALTH
               </button>
-              <button className="admin-secondary-button" type="button" onClick={() => changeMode("LOCAL_MOCK")}>
-                CAMBIAR A LOCAL_MOCK
-              </button>
-              <button className="admin-primary-button" type="button" onClick={() => changeMode("API")}>
-                CAMBIAR A API
-              </button>
-              <button className="admin-secondary-button" type="button" onClick={refreshPendingEvents}>
-                VER EVENTOS PENDIENTES
-              </button>
-              <button className="admin-secondary-button" type="button" onClick={retrySync}>
+              <button className="admin-primary-button" type="button" onClick={retrySync}>
                 REINTENTAR SINCRONIZACION
+              </button>
+              <button className="admin-secondary-button" type="button" onClick={clearQueue}>
+                LIMPIAR COLA OFFLINE DEMO
               </button>
             </section>
 
             <section className="admin-panel event-panel">
-              <h3>EVENTOS LOCALES PENDIENTES</h3>
+              <h3>COLA OFFLINE</h3>
               <div className="event-table">
                 <div className="event-row event-row-head">
                   <span>Fecha/hora</span>
-                  <span>RUN</span>
+                  <span>RUT</span>
                   <span>Evento</span>
                   <span>Estado</span>
                   <span>Accion</span>
@@ -242,22 +230,23 @@ export default function AdminModal({ terminalConfig, onClose, onConfigChange, on
                   <div className="event-empty">SIN EVENTOS PENDIENTES</div>
                 ) : (
                   pendingEvents.map((event) => (
-                    <div className="event-row" key={event.id}>
+                    <div className="event-row" key={event.offlineEventId}>
                       <span>{formatEventDateTime(event)}</span>
-                      <span>{event.employeeRun ? maskRun(event.employeeRun) : maskRun(event.run)}</span>
-                      <span>{event.eventLabel || event.eventType}</span>
+                      <span>{maskRun(event.run)}</span>
+                      <span>{event.eventType}</span>
                       <span>{event.syncStatus}</span>
-                      <button className="inline-danger-button" type="button" onClick={() => removeEvent(event.id)}>
-                        ELIMINAR DEMO
+                      <button
+                        className="inline-danger-button"
+                        onClick={() => removePending(event.offlineEventId)}
+                        type="button"
+                      >
+                        ELIMINAR
                       </button>
                     </div>
                   ))
                 )}
               </div>
-              <div className="event-hint">EVENTO PENDIENTE REQUIERE REVALIDACION DE PIN</div>
-              {latestEvents.length > pendingEvents.length ? (
-                <div className="event-hint">Eventos locales totales: {events.length}</div>
-              ) : null}
+              <div className="event-hint">La cola offline no guarda PIN, QR completo, MRZ ni serial.</div>
             </section>
           </div>
         )}

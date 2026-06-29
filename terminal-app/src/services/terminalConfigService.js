@@ -7,7 +7,8 @@ export const defaultTerminalConfig = {
   branch: "Casa Matriz",
   apiBaseUrl: import.meta.env.VITE_API_BASE_URL || DEFAULT_API_BASE_URL,
   mode: import.meta.env.VITE_TERMINAL_MODE || "API",
-  adminPin: "123456"
+  adminPin: "123456",
+  terminalSyncToken: import.meta.env.VITE_TERMINAL_SYNC_TOKEN || "cubo-dev-terminal-token"
 };
 
 /**
@@ -24,7 +25,8 @@ function normalizeTerminalConfig(config) {
     terminalCode: String(config?.terminalCode ?? defaultTerminalConfig.terminalCode).trim().toUpperCase(),
     terminalName: String(config?.terminalName ?? defaultTerminalConfig.terminalName).trim(),
     apiBaseUrl: normalizeApiBaseUrl(config?.apiBaseUrl ?? defaultTerminalConfig.apiBaseUrl),
-    mode: config?.mode === "LOCAL_MOCK" ? "LOCAL_MOCK" : "API"
+    mode: config?.mode === "LOCAL_MOCK" ? "LOCAL_MOCK" : "API",
+    terminalSyncToken: String(config?.terminalSyncToken ?? defaultTerminalConfig.terminalSyncToken)
   };
 }
 

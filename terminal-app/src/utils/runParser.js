@@ -13,6 +13,19 @@ export function formatRun(runNumber, dv) {
   return `${String(runNumber).replace(/\D/g, "")}-${String(dv).toUpperCase()}`;
 }
 
+export function formatManualRunInput(value) {
+  const compact = String(value ?? "")
+    .toUpperCase()
+    .replace(/[^0-9K]/g, "")
+    .slice(0, 9);
+
+  if (compact.length <= 1) {
+    return compact;
+  }
+
+  return `${compact.slice(0, -1)}-${compact.slice(-1)}`;
+}
+
 export function isValidRunFormat(run) {
   return /^[0-9]{7,8}-[0-9K]$/.test(String(run ?? "").toUpperCase());
 }
@@ -45,29 +58,48 @@ export function maskRun(run) {
 }
 
 function buildResult(runNumber, dv) {
-  const run = formatRun(runNumber, dv);
+  const cleanRunNumber = String(runNumber ?? "").replace(/\D/g, "");
+  const cleanDv = String(dv ?? "").toUpperCase().replace(/[^0-9K]/g, "");
+  const run = formatRun(cleanRunNumber, cleanDv);
 
   if (!isValidRunFormat(run)) {
     return { ok: false, error: "RUN_NO_DETECTADO" };
   }
 
-  if (VALIDATE_RUN_DV && !validateRunDv(runNumber, dv)) {
+  if (VALIDATE_RUN_DV && !validateRunDv(cleanRunNumber, cleanDv)) {
     return { ok: false, error: "RUN_INVALIDO" };
   }
 
   return {
     ok: true,
     run,
-    runNumber: String(runNumber),
-    dv: String(dv).toUpperCase()
+    runNumber: cleanRunNumber,
+    dv: cleanDv
   };
+}
+
+export function parseManualRun(rawText) {
+  const compact = String(rawText ?? "")
+    .toUpperCase()
+    .replace(/[^0-9K]/g, "");
+
+  if (!/^[0-9]{7,8}[0-9K]$/.test(compact)) {
+    return { ok: false, error: "RUN_NO_DETECTADO" };
+  }
+
+  return buildResult(compact.slice(0, -1), compact.slice(-1));
 }
 
 export function extractRunFromScan(rawText) {
   // The full QR payload can contain sensitive data. This parser only returns RUN parts.
   const text = normalizeScanText(rawText);
 
-  const runScopedMatch = text.match(/run[^0-9a-z]{0,12}([0-9]{7,8})[^0-9a-z]?([0-9k])/i);
+  const queryRunMatch = text.match(/[?&]run=([0-9]{7,8})[-']?([0-9k])(?:&|$)/i);
+  if (queryRunMatch) {
+    return buildResult(queryRunMatch[1], queryRunMatch[2]);
+  }
+
+  const runScopedMatch = text.match(/run[^0-9a-z]{0,18}([0-9]{7,8})[^0-9a-z]?([0-9k])/i);
   if (runScopedMatch) {
     return buildResult(runScopedMatch[1], runScopedMatch[2]);
   }
@@ -80,6 +112,11 @@ export function extractRunFromScan(rawText) {
   const standaloneRunMatch = text.match(/(?:^|[^0-9])([0-9]{7,8})[-']?([0-9k])(?:[^0-9a-z]|$)/i);
   if (standaloneRunMatch) {
     return buildResult(standaloneRunMatch[1], standaloneRunMatch[2]);
+  }
+
+  const manualResult = parseManualRun(text);
+  if (manualResult.ok) {
+    return manualResult;
   }
 
   return { ok: false, error: "RUN_NO_DETECTADO" };

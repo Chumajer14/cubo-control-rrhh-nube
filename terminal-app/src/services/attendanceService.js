@@ -1,9 +1,18 @@
 import { findEmployeeByRun, validateEmployeePin } from "./mockEmployeeService";
+import { enqueueOfflineEvent } from "./offlineQueueService";
+import { fetchWithTimeout } from "./syncService";
 import { getTerminalConfig, normalizeApiBaseUrl } from "./terminalConfigService";
 import { createTimestampParts } from "../utils/dateTime";
-import { EVENT_LABELS, EVENT_TYPES, getSuccessMessage } from "../utils/eventTypes";
+import { ERROR_CODES, createErrorResult, mapApiMessageToError } from "../utils/errorCodes";
+import {
+  EVENT_LABELS,
+  EVENT_TYPES,
+  getOfflineSuccessMessage,
+  getSuccessMessage
+} from "../utils/eventTypes";
 
 const EVENTS_STORAGE_KEY = "cubo.terminal.attendanceEvents";
+const REQUEST_TIMEOUT_MS = 5000;
 
 function createId() {
   if (window.crypto?.randomUUID) {
@@ -35,17 +44,8 @@ export function clearLocalEvents() {
   saveLocalEvents([]);
 }
 
-export function deleteLocalEvent(eventId) {
-  saveLocalEvents(getLocalEvents().filter((event) => event.id !== eventId));
-}
-
-export function getPendingEvents() {
-  return getLocalEvents().filter((event) => event.syncStatus === "PENDING");
-}
-
 function appendLocalEvent(event) {
-  const events = getLocalEvents();
-  saveLocalEvents([event, ...events]);
+  saveLocalEvents([event, ...getLocalEvents()]);
 }
 
 function findLastEvent(employeeRun, eventTypes) {
@@ -105,9 +105,7 @@ function validateEventRules(employeeRun, eventType, localDate) {
   return null;
 }
 
-function buildAttendanceEvent({ employee, eventType, terminalConfig, syncStatus = "PENDING" }) {
-  const timestampParts = createTimestampParts();
-
+function buildLocalEvent({ employee, eventType, terminalConfig, inputMethod, syncStatus = "LOCAL_ONLY" }) {
   return {
     id: createId(),
     employeeRun: employee.run,
@@ -117,28 +115,32 @@ function buildAttendanceEvent({ employee, eventType, terminalConfig, syncStatus 
     terminalName: terminalConfig.terminalName,
     eventType,
     eventLabel: EVENT_LABELS[eventType],
-    ...timestampParts,
+    ...createTimestampParts(),
     source: "TERMINAL_PC",
-    inputMethod: "QR_CEDULA_SCANNER",
+    inputMethod,
     deviceMode: "KIOSK",
     syncStatus
   };
 }
 
-function buildPendingApiEvent({ run, eventType, terminalCode, timestamp }) {
-  const timestampDate = new Date(timestamp);
-  const timestampParts = createTimestampParts(Number.isNaN(timestampDate.getTime()) ? new Date() : timestampDate);
-
-  return {
-    id: createId(),
+function buildOfflineResult({ run, eventType, terminalCode, timestamp, inputMethod }) {
+  const offlineEvent = enqueueOfflineEvent({
     run,
     eventType,
     terminalCode,
-    ...timestampParts,
-    syncStatus: "PENDING",
-    source: "TERMINAL_PC",
-    inputMethod: "QR_CEDULA_SCANNER",
-    pendingReason: "REQUIRES_PIN_REVALIDATION"
+    timestamp,
+    inputMethod
+  });
+
+  return {
+    ok: true,
+    offline: true,
+    message: getOfflineSuccessMessage(eventType),
+    employeeName: "NO DISPONIBLE",
+    eventType,
+    timestamp,
+    source: "OFFLINE_QUEUE",
+    event: offlineEvent
   };
 }
 
@@ -151,14 +153,17 @@ async function readJsonResponse(response) {
 }
 
 async function postMarkToApi({ payload, apiBaseUrl }) {
-  const normalizedApiBaseUrl = normalizeApiBaseUrl(apiBaseUrl);
-  const response = await fetch(`${normalizedApiBaseUrl}/attendance/mark`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json"
+  const response = await fetchWithTimeout(
+    `${normalizeApiBaseUrl(apiBaseUrl)}/attendance/mark`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify(payload)
     },
-    body: JSON.stringify(payload)
-  });
+    REQUEST_TIMEOUT_MS
+  );
   const data = await readJsonResponse(response);
 
   if (response.ok && data.ok === true) {
@@ -166,42 +171,42 @@ async function postMarkToApi({ payload, apiBaseUrl }) {
       ok: true,
       message: data.message || getSuccessMessage(payload.eventType),
       employeeName: data.employeeName,
-      eventType: data.eventType,
-      timestamp: data.timestamp,
+      eventType: data.eventType || payload.eventType,
+      timestamp: data.timestamp || payload.timestamp,
       source: "AWS_API"
     };
   }
 
-  return {
-    ok: false,
-    message: data.message || "ERROR API"
-  };
+  if (response.status >= 500) {
+    return { networkFailure: true };
+  }
+
+  return createErrorResult(mapApiMessageToError(data.message), data.message);
 }
 
-export async function registerAttendanceEventApi({ run, pin, eventType, terminalCode, apiBaseUrl }) {
+export async function registerAttendanceEventApi({
+  run,
+  pin,
+  eventType,
+  terminalCode,
+  apiBaseUrl,
+  inputMethod
+}) {
   const normalizedRun = String(run ?? "").trim().toUpperCase();
   const normalizedPin = String(pin ?? "");
   const normalizedTerminalCode = String(terminalCode ?? "").trim().toUpperCase();
   const normalizedApiBaseUrl = normalizeApiBaseUrl(apiBaseUrl);
 
-  if (!normalizedRun) {
-    return { ok: false, message: "RUN NO DETECTADO" };
+  if (!normalizedRun || !EVENT_LABELS[eventType]) {
+    return createErrorResult(ERROR_CODES.RUN_INVALID);
   }
 
   if (!normalizedPin) {
-    return { ok: false, message: "PIN INCORRECTO" };
+    return createErrorResult(ERROR_CODES.PIN_INCORRECT);
   }
 
-  if (!EVENT_LABELS[eventType]) {
-    return { ok: false, message: "EVENTO INVALIDO" };
-  }
-
-  if (!normalizedTerminalCode) {
-    return { ok: false, message: "TERMINAL SIN CONFIGURACION" };
-  }
-
-  if (!normalizedApiBaseUrl) {
-    return { ok: false, message: "API NO CONFIGURADA" };
+  if (!normalizedTerminalCode || !normalizedApiBaseUrl) {
+    return createErrorResult(ERROR_CODES.TERMINAL_CONFIG);
   }
 
   const timestamp = new Date().toISOString();
@@ -214,25 +219,30 @@ export async function registerAttendanceEventApi({ run, pin, eventType, terminal
   };
 
   try {
-    return await postMarkToApi({ payload, apiBaseUrl: normalizedApiBaseUrl });
+    const result = await postMarkToApi({ payload, apiBaseUrl: normalizedApiBaseUrl });
+    if (result.networkFailure) {
+      return buildOfflineResult({
+        run: normalizedRun,
+        eventType,
+        terminalCode: normalizedTerminalCode,
+        timestamp,
+        inputMethod
+      });
+    }
+
+    return result;
   } catch {
-    const pendingEvent = buildPendingApiEvent({
+    return buildOfflineResult({
       run: normalizedRun,
       eventType,
       terminalCode: normalizedTerminalCode,
-      timestamp
+      timestamp,
+      inputMethod
     });
-    appendLocalEvent(pendingEvent);
-    return {
-      ok: false,
-      message: "SIN CONEXION - EVENTO GUARDADO PENDIENTE",
-      pending: true,
-      event: pendingEvent
-    };
   }
 }
 
-export function registerAttendanceEventLocal({ run, pin, eventType, terminalCode }) {
+export function registerAttendanceEventLocal({ run, pin, eventType, terminalCode, inputMethod }) {
   const normalizedRun = String(run ?? "").trim().toUpperCase();
   const normalizedPin = String(pin ?? "");
   const terminalConfig = getTerminalConfig();
@@ -242,48 +252,52 @@ export function registerAttendanceEventLocal({ run, pin, eventType, terminalCode
   };
   const currentDate = createTimestampParts().localDate;
 
-  if (!normalizedRun) {
-    return { ok: false, message: "RUN NO DETECTADO" };
-  }
-
-  if (!EVENT_LABELS[eventType]) {
-    return { ok: false, message: "EVENTO INVALIDO" };
+  if (!normalizedRun || !EVENT_LABELS[eventType]) {
+    return createErrorResult(ERROR_CODES.RUN_INVALID);
   }
 
   if (!effectiveTerminalConfig.terminalCode) {
-    return { ok: false, message: "TERMINAL SIN CONFIGURACION" };
+    return createErrorResult(ERROR_CODES.TERMINAL_CONFIG);
   }
 
   const employee = findEmployeeByRun(normalizedRun);
   if (!employee) {
-    return { ok: false, message: "EMPLEADO NO ENCONTRADO" };
+    return createErrorResult(ERROR_CODES.EMPLOYEE_NOT_FOUND, "EMPLEADO NO ENCONTRADO");
   }
 
   if (!employee.active) {
-    return { ok: false, message: "EMPLEADO INACTIVO" };
+    return createErrorResult(ERROR_CODES.EMPLOYEE_INACTIVE, "EMPLEADO INACTIVO");
   }
 
   if (!validateEmployeePin(normalizedRun, normalizedPin)) {
-    return { ok: false, message: "PIN INCORRECTO" };
+    return createErrorResult(ERROR_CODES.PIN_INCORRECT, "PIN INCORRECTO");
   }
 
   const ruleMessage = validateEventRules(normalizedRun, eventType, currentDate);
   if (ruleMessage) {
-    return { ok: false, message: ruleMessage };
+    return createErrorResult(mapApiMessageToError(ruleMessage), ruleMessage);
   }
 
-  const event = buildAttendanceEvent({
+  const event = buildLocalEvent({
     employee,
     eventType,
     terminalConfig: effectiveTerminalConfig,
-    syncStatus: effectiveTerminalConfig.mode === "API" ? "PENDING" : "LOCAL_ONLY"
+    inputMethod
   });
 
   appendLocalEvent(event);
-  return { ok: true, message: getSuccessMessage(eventType), event };
+  return {
+    ok: true,
+    message: getSuccessMessage(eventType),
+    employeeName: employee.name,
+    eventType,
+    timestamp: event.timestamp,
+    source: "LOCAL_MOCK",
+    event
+  };
 }
 
-export async function registerAttendanceEvent({ run, pin, eventType }) {
+export async function registerAttendanceEvent({ run, pin, eventType, inputMethod }) {
   const config = getTerminalConfig();
 
   if (config.mode === "API") {
@@ -292,7 +306,8 @@ export async function registerAttendanceEvent({ run, pin, eventType }) {
       pin,
       eventType,
       terminalCode: config.terminalCode,
-      apiBaseUrl: config.apiBaseUrl
+      apiBaseUrl: config.apiBaseUrl,
+      inputMethod
     });
   }
 
@@ -300,6 +315,7 @@ export async function registerAttendanceEvent({ run, pin, eventType }) {
     run,
     pin,
     eventType,
-    terminalCode: config.terminalCode
+    terminalCode: config.terminalCode,
+    inputMethod
   });
 }

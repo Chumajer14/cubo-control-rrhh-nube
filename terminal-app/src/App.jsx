@@ -1,44 +1,280 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import AdminModal from "./components/AdminModal";
-import FunctionPad from "./components/FunctionPad";
-import LedDisplay from "./components/LedDisplay";
-import NumericPad from "./components/NumericPad";
-import StatusMessage from "./components/StatusMessage";
-import useScannerInput from "./hooks/useScannerInput";
+import ClockDevice from "./components/ClockDevice";
 import { registerAttendanceEvent } from "./services/attendanceService";
+import { getOfflineQueueStats } from "./services/offlineQueueService";
+import { checkApiHealth, syncPendingEvents } from "./services/syncService";
 import { getTerminalConfig } from "./services/terminalConfigService";
-import { EVENT_LABELS, FUNCTION_KEYS } from "./utils/eventTypes";
-import { extractRunFromScan, maskRun } from "./utils/runParser";
+import {
+  EVENT_LCD_LABELS,
+  FUNCTION_KEYS,
+  getOfflineLcdLines,
+  getOnlineLcdLines
+} from "./utils/eventTypes";
+import { ERROR_CODES } from "./utils/errorCodes";
+import { createTimestampParts } from "./utils/dateTime";
+import { extractRunFromScan, formatManualRunInput, parseManualRun } from "./utils/runParser";
 
 const MAX_PIN_LENGTH = 8;
+const SCANNER_IDLE_TIMEOUT_MS = 180;
 const TERMINAL_STATES = {
   IDLE: "IDLE",
-  WAITING_SCAN: "WAITING_SCAN",
+  ACTION_SELECTED: "ACTION_SELECTED",
+  WAITING_RUT: "WAITING_RUT",
   WAITING_PIN: "WAITING_PIN",
-  PROCESSING: "PROCESSING",
-  SUCCESS: "SUCCESS",
+  PROCESSING_ONLINE: "PROCESSING_ONLINE",
+  SUCCESS_ONLINE: "SUCCESS_ONLINE",
+  SUCCESS_OFFLINE: "SUCCESS_OFFLINE",
   ERROR: "ERROR",
   ADMIN_AUTH: "ADMIN_AUTH",
-  ADMIN_MODE: "ADMIN_MODE"
+  ADMIN_MODE: "ADMIN_MODE",
+  SYNCING: "SYNCING"
 };
+
+function getFunctionKeyByEvent(eventType) {
+  return Object.entries(FUNCTION_KEYS).find(([, value]) => value === eventType)?.[0] || "";
+}
+
+function shouldTreatBufferAsScan(buffer) {
+  const value = String(buffer ?? "").toLowerCase();
+  return value.includes("run") || value.includes("http") || /[?&=¿'/:]/.test(value) || value.length > 12;
+}
+
+function createVoucher({ result, run, eventType, terminalCode, offline }) {
+  const timestampParts = createTimestampParts(result.timestamp ? new Date(result.timestamp) : new Date());
+  return {
+    employeeName: result.employeeName || "NO DISPONIBLE",
+    run,
+    eventType,
+    terminalCode,
+    localDate: timestampParts.localDate,
+    localTime: timestampParts.localTime,
+    status: offline ? "REGISTRADO OFFLINE" : "REGISTRADO OK",
+    syncStatus: offline ? "PENDIENTE" : ""
+  };
+}
 
 export default function App() {
   const [now, setNow] = useState(new Date());
   const [terminalState, setTerminalState] = useState(TERMINAL_STATES.IDLE);
-  const [pin, setPin] = useState("");
-  const [detectedRun, setDetectedRun] = useState("");
-  const [status, setStatus] = useState({ message: "SELECCIONE ACCION", tone: "idle" });
-  const [selectedEventType, setSelectedEventType] = useState(null);
-  const [lastEvent, setLastEvent] = useState(null);
-  const [adminOpen, setAdminOpen] = useState(false);
   const [terminalConfig, setTerminalConfig] = useState(() => getTerminalConfig());
+  const [selectedEventType, setSelectedEventType] = useState(null);
+  const [rutInput, setRutInput] = useState("");
+  const [detectedRun, setDetectedRun] = useState("");
+  const [inputMethod, setInputMethod] = useState("MANUAL_RUT");
+  const [pin, setPin] = useState("");
+  const [lcdLines, setLcdLines] = useState(["SELECCIONE ACCION"]);
+  const [adminOpen, setAdminOpen] = useState(false);
+  const [connectionStatus, setConnectionStatus] = useState("ONLINE");
+  const [pendingCount, setPendingCount] = useState(() => getOfflineQueueStats().pending);
+  const [voucher, setVoucher] = useState(null);
   const resetTimerRef = useRef(null);
-  const connectionStatusShownRef = useRef(false);
+  const scannerBufferRef = useRef("");
+  const scannerTimerRef = useRef(null);
 
-  const selectedEventLabel = useMemo(
-    () => (selectedEventType ? EVENT_LABELS[selectedEventType] : ""),
-    [selectedEventType]
+  const selectedFunction = useMemo(() => getFunctionKeyByEvent(selectedEventType), [selectedEventType]);
+
+  const refreshQueueStats = useCallback(() => {
+    setPendingCount(getOfflineQueueStats().pending);
+  }, []);
+
+  const resetToIdle = useCallback(() => {
+    window.clearTimeout(resetTimerRef.current);
+    window.clearTimeout(scannerTimerRef.current);
+    scannerBufferRef.current = "";
+    setTerminalState(TERMINAL_STATES.IDLE);
+    setSelectedEventType(null);
+    setRutInput("");
+    setDetectedRun("");
+    setInputMethod("MANUAL_RUT");
+    setPin("");
+    setLcdLines(["SELECCIONE ACCION"]);
+    refreshQueueStats();
+  }, [refreshQueueStats]);
+
+  const finishAfterDelay = useCallback(
+    (state, lines, nextVoucher = null) => {
+      window.clearTimeout(resetTimerRef.current);
+      setTerminalState(state);
+      setLcdLines(lines);
+      if (nextVoucher) {
+        setVoucher(nextVoucher);
+      }
+      resetTimerRef.current = window.setTimeout(resetToIdle, 3600);
+    },
+    [resetToIdle]
   );
+
+  const showError = useCallback(
+    (errorCode = ERROR_CODES.INTERNAL) => {
+      finishAfterDelay(TERMINAL_STATES.ERROR, [errorCode.code, errorCode.message]);
+    },
+    [finishAfterDelay]
+  );
+
+  const promptForRut = useCallback((eventType) => {
+    setSelectedEventType(eventType);
+    setRutInput("");
+    setDetectedRun("");
+    setPin("");
+    setInputMethod("MANUAL_RUT");
+    setTerminalState(TERMINAL_STATES.WAITING_RUT);
+    setLcdLines([EVENT_LCD_LABELS[eventType], "RUT:", "ESCANEE O DIGITE"]);
+  }, []);
+
+  const confirmRut = useCallback(
+    (source = "MANUAL_RUT", rawScan = "") => {
+      const parsedRun = source === "QR_CEDULA_SCANNER" ? extractRunFromScan(rawScan) : parseManualRun(rutInput);
+      scannerBufferRef.current = "";
+      window.clearTimeout(scannerTimerRef.current);
+
+      if (!parsedRun.ok) {
+        showError(ERROR_CODES.RUN_INVALID);
+        return;
+      }
+
+      setDetectedRun(parsedRun.run);
+      setInputMethod(source);
+      setPin("");
+      setTerminalState(TERMINAL_STATES.WAITING_PIN);
+      setLcdLines(["PIN:"]);
+    },
+    [rutInput, showError]
+  );
+
+  const processScannerBuffer = useCallback(() => {
+    const scanText = scannerBufferRef.current;
+    if (!shouldTreatBufferAsScan(scanText)) {
+      return;
+    }
+
+    confirmRut("QR_CEDULA_SCANNER", scanText);
+  }, [confirmRut]);
+
+  const appendRutCharacter = useCallback((value) => {
+    setRutInput((current) => formatManualRunInput(`${current}${value}`));
+  }, []);
+
+  const appendPinDigit = useCallback((digit) => {
+    setPin((current) => (current.length >= MAX_PIN_LENGTH ? current : `${current}${digit}`));
+  }, []);
+
+  const clearCurrentField = useCallback(() => {
+    if (terminalState === TERMINAL_STATES.WAITING_PIN) {
+      setPin("");
+      return;
+    }
+
+    if (terminalState === TERMINAL_STATES.WAITING_RUT || terminalState === TERMINAL_STATES.ACTION_SELECTED) {
+      scannerBufferRef.current = "";
+      setRutInput("");
+    }
+  }, [terminalState]);
+
+  const confirmPin = useCallback(async () => {
+    if (!selectedEventType || !detectedRun || !pin) {
+      showError(ERROR_CODES.PIN_INCORRECT);
+      return;
+    }
+
+    setTerminalState(TERMINAL_STATES.PROCESSING_ONLINE);
+    setLcdLines(["REGISTRANDO", "ESPERE..."]);
+
+    const result = await registerAttendanceEvent({
+      run: detectedRun,
+      pin,
+      eventType: selectedEventType,
+      inputMethod
+    });
+    setPin("");
+
+    if (!result.ok) {
+      showError({ code: result.errorCode || ERROR_CODES.INTERNAL.code, message: result.errorMessage || ERROR_CODES.INTERNAL.message });
+      return;
+    }
+
+    const nextVoucher = createVoucher({
+      result,
+      run: detectedRun,
+      eventType: selectedEventType,
+      terminalCode: terminalConfig.terminalCode,
+      offline: Boolean(result.offline)
+    });
+    refreshQueueStats();
+
+    if (result.offline) {
+      finishAfterDelay(TERMINAL_STATES.SUCCESS_OFFLINE, getOfflineLcdLines(selectedEventType), nextVoucher);
+      return;
+    }
+
+    finishAfterDelay(
+      TERMINAL_STATES.SUCCESS_ONLINE,
+      getOnlineLcdLines(selectedEventType, result.employeeName),
+      nextVoucher
+    );
+  }, [
+    detectedRun,
+    finishAfterDelay,
+    inputMethod,
+    pin,
+    refreshQueueStats,
+    selectedEventType,
+    showError,
+    terminalConfig.terminalCode
+  ]);
+
+  const handleOk = useCallback(() => {
+    if (terminalState === TERMINAL_STATES.WAITING_RUT || terminalState === TERMINAL_STATES.ACTION_SELECTED) {
+      if (shouldTreatBufferAsScan(scannerBufferRef.current)) {
+        confirmRut("QR_CEDULA_SCANNER", scannerBufferRef.current);
+        return;
+      }
+      confirmRut("MANUAL_RUT");
+      return;
+    }
+
+    if (terminalState === TERMINAL_STATES.WAITING_PIN) {
+      confirmPin();
+    }
+  }, [confirmPin, confirmRut, terminalState]);
+
+  const handleFunction = useCallback(
+    (keyName) => {
+      if (keyName === "F6") {
+        setAdminOpen(true);
+        setTerminalState(TERMINAL_STATES.ADMIN_AUTH);
+        setLcdLines(["ADMIN", "PIN TECNICO"]);
+        return;
+      }
+
+      const eventType = FUNCTION_KEYS[keyName];
+      if (terminalState === TERMINAL_STATES.IDLE && eventType) {
+        setTerminalState(TERMINAL_STATES.ACTION_SELECTED);
+        promptForRut(eventType);
+      }
+    },
+    [promptForRut, terminalState]
+  );
+
+  const handleDigit = useCallback(
+    (digit) => {
+      if (terminalState === TERMINAL_STATES.WAITING_PIN) {
+        appendPinDigit(digit);
+        return;
+      }
+
+      if (terminalState === TERMINAL_STATES.WAITING_RUT || terminalState === TERMINAL_STATES.ACTION_SELECTED) {
+        appendRutCharacter(digit);
+      }
+    },
+    [appendPinDigit, appendRutCharacter, terminalState]
+  );
+
+  const handleK = useCallback(() => {
+    if (terminalState === TERMINAL_STATES.WAITING_RUT || terminalState === TERMINAL_STATES.ACTION_SELECTED) {
+      appendRutCharacter("K");
+    }
+  }, [appendRutCharacter, terminalState]);
 
   useEffect(() => {
     const timerId = window.setInterval(() => setNow(new Date()), 1000);
@@ -46,154 +282,67 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    return () => window.clearTimeout(resetTimerRef.current);
-  }, []);
+    function handleQueueChanged() {
+      refreshQueueStats();
+    }
 
-  const resetToIdle = useCallback((message = "SELECCIONE ACCION", tone = "idle") => {
-    window.clearTimeout(resetTimerRef.current);
-    setTerminalState(TERMINAL_STATES.IDLE);
-    setSelectedEventType(null);
-    setDetectedRun("");
-    setPin("");
-    setLastEvent(null);
-    setStatus({ message, tone });
-  }, []);
+    window.addEventListener("cubo:offline-queue-changed", handleQueueChanged);
+    return () => window.removeEventListener("cubo:offline-queue-changed", handleQueueChanged);
+  }, [refreshQueueStats]);
 
   useEffect(() => {
-    if (connectionStatusShownRef.current || terminalConfig.mode !== "API") {
+    let stopped = false;
+
+    async function updateConnection() {
+      if (terminalConfig.mode !== "API") {
+        setConnectionStatus("LOCAL_MOCK");
+        return;
+      }
+
+      const health = await checkApiHealth(terminalConfig);
+      if (!stopped) {
+        setConnectionStatus(health.online ? "ONLINE" : "OFFLINE");
+      }
+    }
+
+    updateConnection();
+    const timerId = window.setInterval(updateConnection, 15000);
+
+    return () => {
+      stopped = true;
+      window.clearInterval(timerId);
+    };
+  }, [terminalConfig]);
+
+  useEffect(() => {
+    if (terminalConfig.mode !== "API") {
       return undefined;
     }
 
-    connectionStatusShownRef.current = true;
-    setStatus({ message: "CONECTANDO CON AWS...", tone: "busy" });
-    const timerId = window.setTimeout(() => resetToIdle(), 900);
-
-    return () => window.clearTimeout(timerId);
-  }, [resetToIdle, terminalConfig.mode]);
-
-  const finishWithStatus = useCallback((message, tone, event = null) => {
-    window.clearTimeout(resetTimerRef.current);
-    setTerminalState(tone === "success" ? TERMINAL_STATES.SUCCESS : TERMINAL_STATES.ERROR);
-    setLastEvent(event);
-    setStatus({ message, tone });
-
-    resetTimerRef.current = window.setTimeout(() => {
-      resetToIdle();
-    }, 2600);
-  }, [resetToIdle]);
-
-  const appendPinDigit = useCallback((digit) => {
-    if (terminalState !== TERMINAL_STATES.WAITING_PIN) {
-      return;
-    }
-
-    setPin((current) => {
-      if (current.length >= MAX_PIN_LENGTH) {
-        return current;
-      }
-
-      return `${current}${digit}`;
-    });
-  }, [terminalState]);
-
-  const removePinDigit = useCallback(() => {
-    if (terminalState === TERMINAL_STATES.WAITING_PIN) {
-      setPin((current) => current.slice(0, -1));
-    }
-  }, [terminalState]);
-
-  const cancelOperation = useCallback(() => {
-    finishWithStatus("OPERACION CANCELADA", "error");
-  }, [finishWithStatus]);
-
-  const confirmPin = useCallback(async () => {
-    if (terminalState !== TERMINAL_STATES.WAITING_PIN || !selectedEventType || !detectedRun) {
-      finishWithStatus("SELECCIONE ACCION", "error");
-      return;
-    }
-
-    if (!pin) {
-      finishWithStatus("PIN INCORRECTO", "error");
-      return;
-    }
-
-    setTerminalState(TERMINAL_STATES.PROCESSING);
-    setStatus({
-      message: terminalConfig.mode === "API" ? "REGISTRANDO EN AWS..." : "REGISTRANDO...",
-      tone: "busy"
-    });
-
-    const result = await registerAttendanceEvent({
-      run: detectedRun,
-      pin,
-      eventType: selectedEventType
-    });
-
-    const resultEvent = result.event ?? {
-      employeeName: result.employeeName,
-      eventLabel: EVENT_LABELS[result.eventType] || EVENT_LABELS[selectedEventType]
-    };
-    finishWithStatus(result.message, result.ok ? "success" : "error", resultEvent);
-  }, [detectedRun, finishWithStatus, pin, selectedEventType, terminalConfig.mode, terminalState]);
-
-  const handleScanComplete = useCallback(
-    (scanText) => {
-      const parsedRun = extractRunFromScan(scanText);
-      scanText = "";
-
-      if (!parsedRun.ok) {
-        finishWithStatus(parsedRun.error === "RUN_INVALIDO" ? "RUN INVALIDO" : "RUN NO DETECTADO", "error");
+    async function runSync() {
+      const stats = getOfflineQueueStats();
+      if (stats.pending === 0) {
+        refreshQueueStats();
         return;
       }
 
-      setDetectedRun(parsedRun.run);
-      setPin("");
-      setTerminalState(TERMINAL_STATES.WAITING_PIN);
-      setStatus({ message: "INGRESE PIN", tone: "busy" });
-    },
-    [finishWithStatus]
-  );
+      setConnectionStatus("SYNCING");
+      await syncPendingEvents(terminalConfig);
+      refreshQueueStats();
+      const health = await checkApiHealth(terminalConfig);
+      setConnectionStatus(health.online ? "ONLINE" : "OFFLINE");
+    }
 
-  useScannerInput({
-    active: terminalState === TERMINAL_STATES.WAITING_SCAN && !adminOpen,
-    onScanStart: useCallback(() => {
-      setStatus({ message: "LEYENDO CEDULA...", tone: "busy" });
-    }, []),
-    onScanComplete: handleScanComplete
-  });
+    const timerId = window.setInterval(runSync, 15000);
+    return () => window.clearInterval(timerId);
+  }, [refreshQueueStats, terminalConfig]);
 
-  const selectEvent = useCallback(
-    (eventType) => {
+  useEffect(() => {
+    return () => {
       window.clearTimeout(resetTimerRef.current);
-      setSelectedEventType(eventType);
-      setDetectedRun("");
-      setPin("");
-      setLastEvent(null);
-      setTerminalState(TERMINAL_STATES.WAITING_SCAN);
-      setStatus({ message: "ESCANEE CEDULA", tone: "busy" });
-    },
-    []
-  );
-
-  const handleFunction = useCallback(
-    (keyName) => {
-      if (keyName === "F6") {
-        setStatus({ message: "MODO ADMINISTRADOR", tone: "busy" });
-        setTerminalState(TERMINAL_STATES.ADMIN_AUTH);
-        setAdminOpen(true);
-        return;
-      }
-
-      const eventType = FUNCTION_KEYS[keyName];
-      if (eventType) {
-        if (terminalState !== TERMINAL_STATES.IDLE) {
-          return;
-        }
-        selectEvent(eventType);
-      }
-    },
-    [selectEvent, terminalState]
-  );
+      window.clearTimeout(scannerTimerRef.current);
+    };
+  }, []);
 
   useEffect(() => {
     function handleKeyDown(event) {
@@ -201,45 +350,60 @@ export default function App() {
         return;
       }
 
-      if (terminalState === TERMINAL_STATES.WAITING_SCAN) {
-        if (event.key === "Escape") {
-          event.preventDefault();
-          cancelOperation();
-        }
-        return;
-      }
-
-      if (/^\d$/.test(event.key)) {
+      if (/^F[1-6]$/.test(event.key)) {
         event.preventDefault();
-        appendPinDigit(event.key);
+        handleFunction(event.key);
         return;
       }
 
       if (event.key === "Escape") {
         event.preventDefault();
-        if (terminalState === TERMINAL_STATES.IDLE) {
-          resetToIdle();
-        } else {
-          cancelOperation();
+        resetToIdle();
+        return;
+      }
+
+      if (terminalState === TERMINAL_STATES.WAITING_RUT || terminalState === TERMINAL_STATES.ACTION_SELECTED) {
+        if (event.key === "Enter") {
+          event.preventDefault();
+          handleOk();
+          return;
+        }
+
+        if (event.key === "Backspace") {
+          event.preventDefault();
+          setRutInput((current) => formatManualRunInput(current.slice(0, -1)));
+          return;
+        }
+
+        if (event.key.length === 1) {
+          event.preventDefault();
+          scannerBufferRef.current += event.key;
+          if (/^[0-9kK-]$/.test(event.key)) {
+            appendRutCharacter(event.key);
+          }
+          window.clearTimeout(scannerTimerRef.current);
+          scannerTimerRef.current = window.setTimeout(processScannerBuffer, SCANNER_IDLE_TIMEOUT_MS);
         }
         return;
       }
 
-      if (event.key === "Backspace") {
-        event.preventDefault();
-        removePinDigit();
-        return;
-      }
+      if (terminalState === TERMINAL_STATES.WAITING_PIN) {
+        if (/^\d$/.test(event.key)) {
+          event.preventDefault();
+          appendPinDigit(event.key);
+          return;
+        }
 
-      if (event.key === "Enter") {
-        event.preventDefault();
-        confirmPin();
-        return;
-      }
+        if (event.key === "Backspace") {
+          event.preventDefault();
+          setPin((current) => current.slice(0, -1));
+          return;
+        }
 
-      if (/^F[1-6]$/.test(event.key)) {
-        event.preventDefault();
-        handleFunction(event.key);
+        if (event.key === "Enter") {
+          event.preventDefault();
+          confirmPin();
+        }
       }
     }
 
@@ -248,66 +412,50 @@ export default function App() {
   }, [
     adminOpen,
     appendPinDigit,
-    cancelOperation,
+    appendRutCharacter,
     confirmPin,
     handleFunction,
-    removePinDigit,
+    handleOk,
+    processScannerBuffer,
     resetToIdle,
     terminalState
   ]);
 
   return (
     <main className="terminal-shell">
-      <section className="terminal-device">
-        <div className="device-topbar">
-          <span className="brand-mark">CUBO</span>
-          <span>{terminalConfig.branch}</span>
-        </div>
-
-        <div className="device-content">
-          <div className="display-column">
-            <LedDisplay
-              now={now}
-              terminalConfig={terminalConfig}
-              terminalState={terminalState}
-              selectedEventLabel={selectedEventLabel}
-              maskedRun={maskRun(detectedRun)}
-              pinLength={pin.length}
-              statusMessage={status.message}
-              lastEvent={lastEvent}
-            />
-            <StatusMessage message={status.message} tone={status.tone} />
-          </div>
-
-          <div className="controls-column">
-            <FunctionPad
-              onFunction={handleFunction}
-              selectedFunction={
-                selectedEventType
-                  ? Object.entries(FUNCTION_KEYS).find(([, value]) => value === selectedEventType)?.[0]
-                  : ""
-              }
-            />
-            <NumericPad
-              disabled={terminalState !== TERMINAL_STATES.WAITING_PIN}
-              onDigit={appendPinDigit}
-              onBackspace={removePinDigit}
-              onCancel={cancelOperation}
-              onEnter={confirmPin}
-            />
-          </div>
-        </div>
-      </section>
+      <ClockDevice
+        connectionStatus={connectionStatus}
+        lcdLines={lcdLines}
+        now={now}
+        onClear={clearCurrentField}
+        onDigit={handleDigit}
+        onFunction={handleFunction}
+        onK={handleK}
+        onOk={handleOk}
+        pendingCount={pendingCount}
+        pinLength={terminalState === TERMINAL_STATES.WAITING_PIN ? pin.length : 0}
+        rutInput={terminalState === TERMINAL_STATES.WAITING_RUT ? rutInput : ""}
+        selectedFunction={selectedFunction}
+        terminalConfig={terminalConfig}
+        terminalState={terminalState}
+        voucher={voucher}
+      />
 
       {adminOpen ? (
         <AdminModal
-          terminalConfig={terminalConfig}
-          onConfigChange={setTerminalConfig}
+          connectionStatus={connectionStatus}
           onAuthenticated={() => setTerminalState(TERMINAL_STATES.ADMIN_MODE)}
           onClose={() => {
             setAdminOpen(false);
             resetToIdle();
           }}
+          onConfigChange={setTerminalConfig}
+          onSync={async () => {
+            setConnectionStatus("SYNCING");
+            await syncPendingEvents(terminalConfig);
+            refreshQueueStats();
+          }}
+          terminalConfig={terminalConfig}
         />
       ) : null}
     </main>
