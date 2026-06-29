@@ -54,6 +54,14 @@ function findLastEvent(employeeRun, eventTypes) {
   );
 }
 
+function findLastWorkShiftEvent(employeeRun) {
+  return findLastEvent(employeeRun, [EVENT_TYPES.INGRESO, EVENT_TYPES.SALIDA]);
+}
+
+function hasActiveWorkShift(employeeRun) {
+  return findLastWorkShiftEvent(employeeRun)?.eventType === EVENT_TYPES.INGRESO;
+}
+
 function hasEventToday(employeeRun, eventType, localDate) {
   return getLocalEvents().some(
     (event) =>
@@ -64,17 +72,21 @@ function hasEventToday(employeeRun, eventType, localDate) {
 }
 
 function validateEventRules(employeeRun, eventType, localDate) {
-  if (eventType === EVENT_TYPES.INGRESO) {
-    const lastAttendance = findLastEvent(employeeRun, [EVENT_TYPES.INGRESO, EVENT_TYPES.SALIDA]);
-    if (lastAttendance?.eventType === EVENT_TYPES.INGRESO) {
-      return "INGRESO YA REGISTRADO";
-    }
+  const workShiftRequiredEvents = [
+    EVENT_TYPES.SALIDA,
+    EVENT_TYPES.VALE_ALMUERZO,
+    EVENT_TYPES.INICIO_ALMUERZO,
+    EVENT_TYPES.FIN_ALMUERZO
+  ];
+
+  if (workShiftRequiredEvents.includes(eventType) && !hasActiveWorkShift(employeeRun)) {
+    return "NO EXISTE INGRESO PREVIO";
   }
 
-  if (eventType === EVENT_TYPES.SALIDA) {
-    const lastAttendance = findLastEvent(employeeRun, [EVENT_TYPES.INGRESO, EVENT_TYPES.SALIDA]);
-    if (!lastAttendance || lastAttendance.eventType === EVENT_TYPES.SALIDA) {
-      return "NO EXISTE INGRESO PREVIO";
+  if (eventType === EVENT_TYPES.INGRESO) {
+    const lastAttendance = findLastWorkShiftEvent(employeeRun);
+    if (lastAttendance?.eventType === EVENT_TYPES.INGRESO) {
+      return "INGRESO YA REGISTRADO";
     }
   }
 
@@ -123,7 +135,31 @@ function buildLocalEvent({ employee, eventType, terminalConfig, inputMethod, syn
   };
 }
 
+function buildMirrorEvent({ run, employeeName, eventType, terminalCode, timestamp, inputMethod, source, syncStatus }) {
+  const timestampDate = timestamp ? new Date(timestamp) : new Date();
+  const timestampParts = createTimestampParts(Number.isNaN(timestampDate.getTime()) ? new Date() : timestampDate);
+
+  return {
+    id: createId(),
+    employeeRun: run,
+    employeeName: employeeName || "NO DISPONIBLE",
+    terminalCode,
+    eventType,
+    eventLabel: EVENT_LABELS[eventType],
+    ...timestampParts,
+    source,
+    inputMethod,
+    deviceMode: "KIOSK",
+    syncStatus
+  };
+}
+
 function buildOfflineResult({ run, eventType, terminalCode, timestamp, inputMethod }) {
+  const ruleMessage = validateEventRules(run, eventType, createTimestampParts(new Date(timestamp)).localDate);
+  if (ruleMessage) {
+    return createErrorResult(mapApiMessageToError(ruleMessage), ruleMessage);
+  }
+
   const offlineEvent = enqueueOfflineEvent({
     run,
     eventType,
@@ -131,6 +167,18 @@ function buildOfflineResult({ run, eventType, terminalCode, timestamp, inputMeth
     timestamp,
     inputMethod
   });
+
+  appendLocalEvent(
+    buildMirrorEvent({
+      run,
+      eventType,
+      terminalCode,
+      timestamp,
+      inputMethod,
+      source: "OFFLINE_QUEUE",
+      syncStatus: "PENDING"
+    })
+  );
 
   return {
     ok: true,
@@ -167,6 +215,19 @@ async function postMarkToApi({ payload, apiBaseUrl }) {
   const data = await readJsonResponse(response);
 
   if (response.ok && data.ok === true) {
+    appendLocalEvent(
+      buildMirrorEvent({
+        run: payload.run,
+        employeeName: data.employeeName,
+        eventType: data.eventType || payload.eventType,
+        terminalCode: payload.terminalCode,
+        timestamp: data.timestamp || payload.timestamp,
+        inputMethod: payload.inputMethod,
+        source: "AWS_API",
+        syncStatus: "SYNCED"
+      })
+    );
+
     return {
       ok: true,
       message: data.message || getSuccessMessage(payload.eventType),
@@ -209,13 +270,16 @@ export async function registerAttendanceEventApi({
     return createErrorResult(ERROR_CODES.TERMINAL_CONFIG);
   }
 
-  const timestamp = new Date().toISOString();
+  const timestampParts = createTimestampParts();
+  const timestamp = timestampParts.timestamp;
   const payload = {
     run: normalizedRun,
     pin: normalizedPin,
     eventType,
     terminalCode: normalizedTerminalCode,
     timestamp,
+    localDate: timestampParts.localDate,
+    localTime: timestampParts.localTime,
     inputMethod
   };
 
