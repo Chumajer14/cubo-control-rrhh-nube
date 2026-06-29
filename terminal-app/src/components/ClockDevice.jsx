@@ -5,10 +5,7 @@ import LcdScreen from "./LcdScreen";
 import PrintedVoucher from "./PrintedVoucher";
 
 export default function ClockDevice({
-  now,
   lcdLines,
-  rutInput,
-  pinLength,
   terminalConfig,
   terminalState,
   connectionStatus,
@@ -33,10 +30,6 @@ export default function ClockDevice({
 
         <LcdScreen
           lines={lcdLines}
-          now={now}
-          pinLength={pinLength}
-          rutInput={rutInput}
-          terminalCode={terminalConfig.terminalCode}
         />
 
         <div className="device-controls">

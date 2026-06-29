@@ -7,7 +7,12 @@ const keypadRows = [
 ];
 
 export default function Keypad({ state, onDigit, onK, onClear, onOk }) {
-  const acceptsInput = state === "WAITING_RUT" || state === "ACTION_SELECTED" || state === "WAITING_PIN";
+  const acceptsInput =
+    state === "WAITING_RUT" ||
+    state === "ACTION_SELECTED" ||
+    state === "WAITING_PIN" ||
+    state === "ADMIN_AUTH" ||
+    state === "ADMIN_MODE";
   const acceptsK = state === "WAITING_RUT" || state === "ACTION_SELECTED";
 
   function handleButton(value) {

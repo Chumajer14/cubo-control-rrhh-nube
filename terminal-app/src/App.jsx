@@ -1,10 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import AdminModal from "./components/AdminModal";
 import ClockDevice from "./components/ClockDevice";
 import { registerAttendanceEvent } from "./services/attendanceService";
 import { getOfflineQueueStats } from "./services/offlineQueueService";
 import { checkApiHealth, syncPendingEvents } from "./services/syncService";
-import { getTerminalConfig } from "./services/terminalConfigService";
+import { getTerminalConfig, updateTerminalConfig } from "./services/terminalConfigService";
 import {
   EVENT_LCD_LABELS,
   FUNCTION_KEYS,
@@ -12,11 +11,21 @@ import {
   getOnlineLcdLines
 } from "./utils/eventTypes";
 import { ERROR_CODES } from "./utils/errorCodes";
-import { createTimestampParts } from "./utils/dateTime";
+import { createTimestampParts, formatClock } from "./utils/dateTime";
 import { extractRunFromScan, formatManualRunInput, parseManualRun } from "./utils/runParser";
 
 const MAX_PIN_LENGTH = 8;
+const MAX_ADMIN_PIN_LENGTH = 12;
 const SCANNER_IDLE_TIMEOUT_MS = 180;
+const ADMIN_MENU_LEVELS = {
+  PIN: "PIN",
+  MAIN: "MAIN",
+  CONFIG: "CONFIG",
+  NETWORK: "NETWORK",
+  PENDING: "PENDING",
+  TEST_API: "TEST_API",
+  MODE: "MODE"
+};
 const TERMINAL_STATES = {
   IDLE: "IDLE",
   ACTION_SELECTED: "ACTION_SELECTED",
@@ -29,6 +38,12 @@ const TERMINAL_STATES = {
   ADMIN_AUTH: "ADMIN_AUTH",
   ADMIN_MODE: "ADMIN_MODE",
   SYNCING: "SYNCING"
+};
+
+const adminInitialState = {
+  authenticated: false,
+  menuLevel: ADMIN_MENU_LEVELS.PIN,
+  selectedOption: null
 };
 
 function getFunctionKeyByEvent(eventType) {
@@ -63,8 +78,9 @@ export default function App() {
   const [detectedRun, setDetectedRun] = useState("");
   const [inputMethod, setInputMethod] = useState("MANUAL_RUT");
   const [pin, setPin] = useState("");
+  const [adminPin, setAdminPin] = useState("");
+  const [adminState, setAdminState] = useState(adminInitialState);
   const [lcdLines, setLcdLines] = useState(["SELECCIONE ACCION"]);
-  const [adminOpen, setAdminOpen] = useState(false);
   const [connectionStatus, setConnectionStatus] = useState("ONLINE");
   const [pendingCount, setPendingCount] = useState(() => getOfflineQueueStats().pending);
   const [voucher, setVoucher] = useState(null);
@@ -73,6 +89,64 @@ export default function App() {
   const scannerTimerRef = useRef(null);
 
   const selectedFunction = useMemo(() => getFunctionKeyByEvent(selectedEventType), [selectedEventType]);
+
+  const visibleLcdLines = useMemo(() => {
+    if (terminalState === TERMINAL_STATES.IDLE) {
+      return [`${formatClock(now)} ${terminalConfig.terminalCode}`, "SELECCIONE ACCION"];
+    }
+
+    if (terminalState === TERMINAL_STATES.WAITING_RUT) {
+      return [EVENT_LCD_LABELS[selectedEventType], `RUT:${rutInput}`];
+    }
+
+    if (terminalState === TERMINAL_STATES.WAITING_PIN) {
+      return [`RUT ${detectedRun}`, `PIN: ${"*".repeat(pin.length)}`];
+    }
+
+    if (terminalState === TERMINAL_STATES.ADMIN_AUTH) {
+      return ["MODO ADMIN", `PIN: ${"*".repeat(adminPin.length)}`];
+    }
+
+    if (terminalState === TERMINAL_STATES.ADMIN_MODE) {
+      if (adminState.menuLevel === ADMIN_MENU_LEVELS.CONFIG) {
+        return [`TERM: ${terminalConfig.terminalCode}`, `MODO: ${terminalConfig.mode}`];
+      }
+
+      if (adminState.menuLevel === ADMIN_MENU_LEVELS.NETWORK) {
+        return ["ESTADO RED", connectionStatus === "LOCAL_MOCK" ? "LOCAL MOCK" : connectionStatus];
+      }
+
+      if (adminState.menuLevel === ADMIN_MENU_LEVELS.PENDING) {
+        return ["PENDIENTES", `TOTAL: ${pendingCount}`];
+      }
+
+      if (adminState.menuLevel === ADMIN_MENU_LEVELS.MODE) {
+        return ["MODO ACTUAL", terminalConfig.mode === "API" ? "API" : "LOCAL MOCK"];
+      }
+
+      if (adminState.menuLevel === ADMIN_MENU_LEVELS.TEST_API) {
+        return lcdLines;
+      }
+
+      return ["ADMIN MENU", "1CFG 2NET 3PEND", "4TEST 5MODO 6SAL"];
+    }
+
+    return lcdLines;
+  }, [
+    adminPin.length,
+    adminState.menuLevel,
+    connectionStatus,
+    detectedRun,
+    lcdLines,
+    now,
+    pendingCount,
+    pin.length,
+    rutInput,
+    selectedEventType,
+    terminalConfig.mode,
+    terminalConfig.terminalCode,
+    terminalState
+  ]);
 
   const refreshQueueStats = useCallback(() => {
     setPendingCount(getOfflineQueueStats().pending);
@@ -88,6 +162,8 @@ export default function App() {
     setDetectedRun("");
     setInputMethod("MANUAL_RUT");
     setPin("");
+    setAdminPin("");
+    setAdminState(adminInitialState);
     setLcdLines(["SELECCIONE ACCION"]);
     refreshQueueStats();
   }, [refreshQueueStats]);
@@ -113,13 +189,14 @@ export default function App() {
   );
 
   const promptForRut = useCallback((eventType) => {
+    setVoucher(null);
     setSelectedEventType(eventType);
     setRutInput("");
     setDetectedRun("");
     setPin("");
     setInputMethod("MANUAL_RUT");
     setTerminalState(TERMINAL_STATES.WAITING_RUT);
-    setLcdLines([EVENT_LCD_LABELS[eventType], "RUT:", "ESCANEE O DIGITE"]);
+    setLcdLines([EVENT_LCD_LABELS[eventType], "RUT:"]);
   }, []);
 
   const confirmRut = useCallback(
@@ -137,7 +214,7 @@ export default function App() {
       setInputMethod(source);
       setPin("");
       setTerminalState(TERMINAL_STATES.WAITING_PIN);
-      setLcdLines(["PIN:"]);
+      setLcdLines([`RUT ${parsedRun.run}`, "PIN:"]);
     },
     [rutInput, showError]
   );
@@ -160,6 +237,20 @@ export default function App() {
   }, []);
 
   const clearCurrentField = useCallback(() => {
+    if (terminalState === TERMINAL_STATES.ADMIN_AUTH) {
+      setAdminPin("");
+      return;
+    }
+
+    if (terminalState === TERMINAL_STATES.ADMIN_MODE) {
+      setAdminState((current) => ({
+        ...current,
+        menuLevel: ADMIN_MENU_LEVELS.MAIN,
+        selectedOption: null
+      }));
+      return;
+    }
+
     if (terminalState === TERMINAL_STATES.WAITING_PIN) {
       setPin("");
       return;
@@ -170,6 +261,123 @@ export default function App() {
       setRutInput("");
     }
   }, [terminalState]);
+
+  const enterAdmin = useCallback(() => {
+    window.clearTimeout(resetTimerRef.current);
+    setVoucher(null);
+    setSelectedEventType(null);
+    setRutInput("");
+    setDetectedRun("");
+    setPin("");
+    setAdminPin("");
+    setAdminState(adminInitialState);
+    setTerminalState(TERMINAL_STATES.ADMIN_AUTH);
+    setLcdLines(["MODO ADMIN", "PIN:"]);
+  }, []);
+
+  const exitAdmin = useCallback(() => {
+    resetToIdle();
+  }, [resetToIdle]);
+
+  const confirmAdminPin = useCallback(() => {
+    if (adminPin === terminalConfig.adminPin) {
+      setAdminPin("");
+      setAdminState({
+        authenticated: true,
+        menuLevel: ADMIN_MENU_LEVELS.MAIN,
+        selectedOption: null
+      });
+      setTerminalState(TERMINAL_STATES.ADMIN_MODE);
+      setLcdLines(["ADMIN MENU", "1CFG 2NET 3PEND", "4TEST 5MODO 6SAL"]);
+      return;
+    }
+
+    setAdminPin("");
+    finishAfterDelay(TERMINAL_STATES.ERROR, [ERROR_CODES.ADMIN_PIN.code, ERROR_CODES.ADMIN_PIN.message]);
+  }, [adminPin, finishAfterDelay, terminalConfig.adminPin]);
+
+  const setAdminMenuLevel = useCallback((menuLevel) => {
+    setAdminState((current) => ({
+      ...current,
+      menuLevel,
+      selectedOption: null
+    }));
+  }, []);
+
+  const testAdminConnection = useCallback(async () => {
+    setTerminalState(TERMINAL_STATES.ADMIN_MODE);
+    setAdminMenuLevel(ADMIN_MENU_LEVELS.TEST_API);
+    setLcdLines(["PROBANDO API", "ESPERE..."]);
+
+    const health = await checkApiHealth(terminalConfig);
+    setConnectionStatus(health.online ? "ONLINE" : "OFFLINE");
+    setLcdLines(health.online ? ["API ONLINE", "OK"] : [ERROR_CODES.API_COMMUNICATION.code, "SIN COMUNIC"]);
+  }, [setAdminMenuLevel, terminalConfig]);
+
+  const toggleTerminalMode = useCallback(() => {
+    const nextMode = terminalConfig.mode === "API" ? "LOCAL_MOCK" : "API";
+    const updatedConfig = updateTerminalConfig({ mode: nextMode });
+    setTerminalConfig(updatedConfig);
+    setConnectionStatus(nextMode === "API" ? connectionStatus : "LOCAL_MOCK");
+    setAdminMenuLevel(ADMIN_MENU_LEVELS.TEST_API);
+    setLcdLines(["CAMBIADO A", nextMode === "API" ? "API" : "LOCAL MOCK"]);
+  }, [connectionStatus, setAdminMenuLevel, terminalConfig.mode]);
+
+  const handleAdminOption = useCallback(
+    (option) => {
+      if (terminalState !== TERMINAL_STATES.ADMIN_MODE || adminState.menuLevel !== ADMIN_MENU_LEVELS.MAIN) {
+        return;
+      }
+
+      if (option === "1") {
+        setAdminMenuLevel(ADMIN_MENU_LEVELS.CONFIG);
+        return;
+      }
+
+      if (option === "2") {
+        setAdminMenuLevel(ADMIN_MENU_LEVELS.NETWORK);
+        return;
+      }
+
+      if (option === "3") {
+        setAdminMenuLevel(ADMIN_MENU_LEVELS.PENDING);
+        return;
+      }
+
+      if (option === "4") {
+        testAdminConnection();
+        return;
+      }
+
+      if (option === "5") {
+        setAdminMenuLevel(ADMIN_MENU_LEVELS.MODE);
+        return;
+      }
+
+      if (option === "6") {
+        exitAdmin();
+      }
+    },
+    [adminState.menuLevel, exitAdmin, setAdminMenuLevel, terminalState, testAdminConnection]
+  );
+
+  const handleAdminOk = useCallback(() => {
+    if (terminalState === TERMINAL_STATES.ADMIN_AUTH) {
+      confirmAdminPin();
+      return;
+    }
+
+    if (terminalState !== TERMINAL_STATES.ADMIN_MODE) {
+      return;
+    }
+
+    if (adminState.menuLevel === ADMIN_MENU_LEVELS.MODE) {
+      toggleTerminalMode();
+      return;
+    }
+
+    setAdminMenuLevel(ADMIN_MENU_LEVELS.MAIN);
+  }, [adminState.menuLevel, confirmAdminPin, setAdminMenuLevel, terminalState, toggleTerminalMode]);
 
   const confirmPin = useCallback(async () => {
     if (!selectedEventType || !detectedRun || !pin) {
@@ -224,6 +432,11 @@ export default function App() {
   ]);
 
   const handleOk = useCallback(() => {
+    if (terminalState === TERMINAL_STATES.ADMIN_AUTH || terminalState === TERMINAL_STATES.ADMIN_MODE) {
+      handleAdminOk();
+      return;
+    }
+
     if (terminalState === TERMINAL_STATES.WAITING_RUT || terminalState === TERMINAL_STATES.ACTION_SELECTED) {
       if (shouldTreatBufferAsScan(scannerBufferRef.current)) {
         confirmRut("QR_CEDULA_SCANNER", scannerBufferRef.current);
@@ -236,14 +449,17 @@ export default function App() {
     if (terminalState === TERMINAL_STATES.WAITING_PIN) {
       confirmPin();
     }
-  }, [confirmPin, confirmRut, terminalState]);
+  }, [confirmPin, confirmRut, handleAdminOk, terminalState]);
 
   const handleFunction = useCallback(
     (keyName) => {
       if (keyName === "F6") {
-        setAdminOpen(true);
-        setTerminalState(TERMINAL_STATES.ADMIN_AUTH);
-        setLcdLines(["ADMIN", "PIN TECNICO"]);
+        if (terminalState === TERMINAL_STATES.ADMIN_AUTH || terminalState === TERMINAL_STATES.ADMIN_MODE) {
+          exitAdmin();
+          return;
+        }
+
+        enterAdmin();
         return;
       }
 
@@ -253,11 +469,21 @@ export default function App() {
         promptForRut(eventType);
       }
     },
-    [promptForRut, terminalState]
+    [enterAdmin, exitAdmin, promptForRut, terminalState]
   );
 
   const handleDigit = useCallback(
     (digit) => {
+      if (terminalState === TERMINAL_STATES.ADMIN_AUTH) {
+        setAdminPin((current) => (current.length >= MAX_ADMIN_PIN_LENGTH ? current : `${current}${digit}`));
+        return;
+      }
+
+      if (terminalState === TERMINAL_STATES.ADMIN_MODE) {
+        handleAdminOption(digit);
+        return;
+      }
+
       if (terminalState === TERMINAL_STATES.WAITING_PIN) {
         appendPinDigit(digit);
         return;
@@ -267,7 +493,7 @@ export default function App() {
         appendRutCharacter(digit);
       }
     },
-    [appendPinDigit, appendRutCharacter, terminalState]
+    [appendPinDigit, appendRutCharacter, handleAdminOption, terminalState]
   );
 
   const handleK = useCallback(() => {
@@ -346,10 +572,6 @@ export default function App() {
 
   useEffect(() => {
     function handleKeyDown(event) {
-      if (adminOpen) {
-        return;
-      }
-
       if (/^F[1-6]$/.test(event.key)) {
         event.preventDefault();
         handleFunction(event.key);
@@ -359,6 +581,34 @@ export default function App() {
       if (event.key === "Escape") {
         event.preventDefault();
         resetToIdle();
+        return;
+      }
+
+      if (terminalState === TERMINAL_STATES.ADMIN_AUTH || terminalState === TERMINAL_STATES.ADMIN_MODE) {
+        if (/^\d$/.test(event.key)) {
+          event.preventDefault();
+          handleDigit(event.key);
+          return;
+        }
+
+        if (event.key === "Enter") {
+          event.preventDefault();
+          handleOk();
+          return;
+        }
+
+        if (event.key === "Backspace") {
+          event.preventDefault();
+          if (terminalState === TERMINAL_STATES.ADMIN_AUTH) {
+            setAdminPin((current) => current.slice(0, -1));
+          }
+          return;
+        }
+
+        if (event.key.toLowerCase() === "c") {
+          event.preventDefault();
+          clearCurrentField();
+        }
         return;
       }
 
@@ -410,10 +660,11 @@ export default function App() {
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [
-    adminOpen,
     appendPinDigit,
     appendRutCharacter,
+    clearCurrentField,
     confirmPin,
+    handleDigit,
     handleFunction,
     handleOk,
     processScannerBuffer,
@@ -425,39 +676,18 @@ export default function App() {
     <main className="terminal-shell">
       <ClockDevice
         connectionStatus={connectionStatus}
-        lcdLines={lcdLines}
-        now={now}
+        lcdLines={visibleLcdLines}
         onClear={clearCurrentField}
         onDigit={handleDigit}
         onFunction={handleFunction}
         onK={handleK}
         onOk={handleOk}
         pendingCount={pendingCount}
-        pinLength={terminalState === TERMINAL_STATES.WAITING_PIN ? pin.length : 0}
-        rutInput={terminalState === TERMINAL_STATES.WAITING_RUT ? rutInput : ""}
         selectedFunction={selectedFunction}
         terminalConfig={terminalConfig}
         terminalState={terminalState}
         voucher={voucher}
       />
-
-      {adminOpen ? (
-        <AdminModal
-          connectionStatus={connectionStatus}
-          onAuthenticated={() => setTerminalState(TERMINAL_STATES.ADMIN_MODE)}
-          onClose={() => {
-            setAdminOpen(false);
-            resetToIdle();
-          }}
-          onConfigChange={setTerminalConfig}
-          onSync={async () => {
-            setConnectionStatus("SYNCING");
-            await syncPendingEvents(terminalConfig);
-            refreshQueueStats();
-          }}
-          terminalConfig={terminalConfig}
-        />
-      ) : null}
     </main>
   );
 }

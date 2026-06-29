@@ -1,7 +1,7 @@
 export const ERROR_CODES = {
   EMPLOYEE_NOT_FOUND: {
     code: "ERROR-01",
-    message: "CONTACTE A RRHH",
+    message: "CONTACTE RRHH",
     cause: "Persona ingresada no esta registrada en el sistema."
   },
   PIN_INCORRECT: {
@@ -11,17 +11,17 @@ export const ERROR_CODES = {
   },
   EMPLOYEE_INACTIVE: {
     code: "ERROR-03",
-    message: "EMPLEADO INACTIVO",
+    message: "EMP INACTIVO",
     cause: "Trabajador desactivado."
   },
   TERMINAL_UNAUTHORIZED: {
     code: "ERROR-04",
-    message: "TERMINAL NO AUTORIZADO",
+    message: "TERM INVALIDO",
     cause: "Terminal no existe o esta inactivo."
   },
   MARK_NOT_ALLOWED: {
     code: "ERROR-05",
-    message: "MARCACION NO PERMITIDA",
+    message: "MARC NO PERMIT",
     cause: "Duplicidad o secuencia incorrecta."
   },
   RUN_INVALID: {
@@ -31,23 +31,28 @@ export const ERROR_CODES = {
   },
   API_COMMUNICATION: {
     code: "ERROR-07",
-    message: "SIN COMUNICACION API",
+    message: "SIN COMUNIC",
     cause: "API no responde, sin internet o timeout."
   },
   SYNC_ERROR: {
     code: "ERROR-08",
-    message: "ERROR DE SINCRONIZACION",
+    message: "ERROR SYNC",
     cause: "Evento offline no pudo sincronizarse."
   },
   TERMINAL_CONFIG: {
     code: "ERROR-09",
-    message: "CONFIGURACION TERMINAL",
+    message: "CONFIG TERMINAL",
     cause: "Falta terminalCode, apiBaseUrl o modo valido."
   },
   INTERNAL: {
     code: "ERROR-10",
     message: "ERROR INTERNO",
     cause: "Error no controlado."
+  },
+  ADMIN_PIN: {
+    code: "ERROR-11",
+    message: "PIN ADMIN",
+    cause: "PIN tecnico invalido."
   }
 };
 

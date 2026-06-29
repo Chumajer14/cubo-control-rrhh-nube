@@ -1,27 +1,26 @@
 const functionButtons = [
-  { keyName: "F1", label: "INGRESO" },
-  { keyName: "F2", label: "SALIDA" },
-  { keyName: "F3", label: "VALE" },
-  { keyName: "F4", label: "INI COL" },
-  { keyName: "F5", label: "FIN COL" },
-  { keyName: "F6", label: "ADMIN" }
+  "F1",
+  "F2",
+  "F3",
+  "F4",
+  "F5",
+  "F6"
 ];
 
 export default function FunctionButtons({ onFunction, selectedFunction, disabled }) {
   return (
     <section className="function-buttons" aria-label="Botones de funcion">
-      {functionButtons.map((button) => (
+      {functionButtons.map((keyName) => (
         <button
           className={`machine-button function-key ${
-            selectedFunction === button.keyName ? "is-selected" : ""
+            selectedFunction === keyName ? "is-selected" : ""
           }`}
-          disabled={disabled && button.keyName !== "F6"}
-          key={button.keyName}
-          onClick={() => onFunction(button.keyName)}
+          disabled={disabled && keyName !== "F6"}
+          key={keyName}
+          onClick={() => onFunction(keyName)}
           type="button"
         >
-          <strong>{button.keyName}</strong>
-          <span>{button.label}</span>
+          {keyName}
         </button>
       ))}
     </section>

@@ -1,17 +1,25 @@
 # CUBO Terminal
 
-CUBO Terminal es una aplicacion de escritorio Electron + React que simula un reloj control fisico simple: carcasa gris, pantalla LCD verde, botones F1-F6 al costado, teclado numerico, tecla `C`, tecla `K` y tecla `OK`.
+CUBO Terminal es una aplicacion de escritorio Electron + React que simula un reloj control fisico simple: carcasa gris, pantalla LCD verde alfanumerica, botones F1-F6, teclado numerico, tecla `C`, tecla `K` y tecla `OK`.
 
 No es un dashboard. La interfaz esta pensada para uso tipo kiosco en un PC con scanner QR de cedula o ingreso manual de RUT.
 
+## Interfaz tipo LCD fisico
+
+La app simula un reloj control real, no una pantalla administrativa moderna. El LCD esta limitado como display alfanumerico `20x4`: cada linea se normaliza a mayusculas, se corta a 20 caracteres y no muestra parrafos ni URLs completas.
+
+Los botones `F1` a `F6` solo muestran su codigo fisico. La descripcion de la accion aparece en el LCD despues de presionar la tecla. El estado de API, offline y pendientes se representa con LED fisicos pequenos.
+
+El modo admin se opera desde el mismo LCD con PIN tecnico y keypad. No hay modal ni panel admin visual dentro del terminal; el panel administrativo real corresponde a una app separada futura.
+
 ## Teclas F1-F6
 
-- `F1`: INGRESO / ENTRA A TURNO.
-- `F2`: SALIDA / SALE DE TURNO.
-- `F3`: VALE_ALMUERZO / VALE COLACION.
-- `F4`: INICIO_ALMUERZO / INICIO COLACION.
-- `F5`: FIN_ALMUERZO / FIN COLACION.
-- `F6`: ADMIN.
+- `F1`: muestra `ENTRA A TURNO` en el LCD.
+- `F2`: muestra `SALE DE TURNO` en el LCD.
+- `F3`: muestra `VALE COLACION` en el LCD.
+- `F4`: muestra `INICIO COL` en el LCD.
+- `F5`: muestra `FIN COLACION` en el LCD.
+- `F6`: entra o sale de admin LCD.
 
 ## Flujo QR
 
@@ -106,12 +114,11 @@ La cola esta aislada en `src/services/offlineQueueService.js` y usa `localStorag
 
 ## Sincronizacion Progresiva
 
-`src/services/syncService.js` intenta sincronizar cada 15 segundos en lotes pequenos. No bloquea la interfaz. El indicador muestra:
+`src/services/syncService.js` intenta sincronizar cada 15 segundos en lotes pequenos. No bloquea la interfaz. Los LED indican:
 
-- `ONLINE`
-- `OFFLINE`
-- `SINCRONIZANDO`
-- `PENDIENTES: N`
+- `API`: conexion API o modo local disponible.
+- `OFF`: sin conexion API.
+- `PEND`: eventos offline pendientes o sincronizacion en curso.
 
 Los eventos offline se envian sin PIN usando `POST /attendance/sync` y header `x-terminal-token`.
 
@@ -202,22 +209,29 @@ El token demo no es un secreto real. En produccion debe reemplazarse por API Key
 
 ## Modo Admin
 
-`F6` abre modo admin. PIN demo: `123456`.
+`F6` abre modo admin en el LCD. PIN demo: `123456`.
 
 Permite:
 
-- Ver API base URL.
 - Ver terminal code.
 - Ver modo actual.
 - Ver estado online/offline.
 - Ver cantidad de pendientes.
 - Probar `GET /health`.
-- Reintentar sincronizacion.
-- Limpiar cola offline demo.
-- Cambiar API URL.
 - Cambiar modo `API` / `LOCAL_MOCK`.
 
-No muestra PIN de trabajador ni QR completo.
+Navegacion:
+
+- `1`: configuracion resumida.
+- `2`: estado red/API.
+- `3`: pendientes offline.
+- `4`: probar conexion.
+- `5`: cambiar modo API/LOCAL_MOCK con `OK`.
+- `6`: salir.
+- `C`: volver al menu.
+- `F6` o `Escape`: salir de admin.
+
+No muestra URL completa, PIN de trabajador ni QR completo.
 
 ## Seguridad y Privacidad
 
@@ -256,7 +270,7 @@ npm run dist
 5. URL invalida o API caida: muestra `OK INGRESO - REGISTRADO OFFLINE`, imprime boucher offline y guarda pendiente sin PIN.
 6. Recuperar conexion: sincroniza pendientes progresivamente y marca `SYNCED` si AWS responde OK.
 7. `F2`, `F3`, `F4`, `F5`: mismo flujo.
-8. `F6 Admin`: muestra configuracion, conexion y eventos pendientes.
+8. `F6 Admin`: pide PIN en LCD, muestra menu numerico y no abre modal.
 9. `npm run electron:dev` funciona.
 10. `npm run dist` genera `.exe`.
 
