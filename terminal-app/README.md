@@ -12,6 +12,20 @@ Los botones `F1` a `F6` solo muestran su codigo fisico. La descripcion de la acc
 
 El modo admin se opera desde el mismo LCD con PIN tecnico y keypad. No hay modal ni panel admin visual dentro del terminal; el panel administrativo real corresponde a una app separada futura.
 
+## Sonidos del terminal
+
+El terminal emite beeps generados localmente con Web Audio API (`AudioContext`, oscilador y ganancia). No usa MP3, assets externos ni descargas de audio.
+
+- Beep corto: tecla o boton presionado.
+- Beep largo: operacion registrada correctamente online.
+- Dos beeps medianos: registro aceptado offline y pendiente de sincronizacion.
+- Tres beeps cortos graves: error `ERROR-XX`.
+- Beeps ascendentes: entrada correcta a admin.
+- Beep corto distinto: salida de admin.
+- Dos beeps rapidos: sincronizacion correcta de pendientes.
+
+El sonido se puede activar o desactivar desde admin con `7 SONIDO` y queda persistente en `localStorage`. El volumen por defecto es bajo/medio (`0.35`). Los QR escaneados se agrupan para evitar decenas de beeps por lectura.
+
 ## Teclas F1-F6
 
 - `F1`: muestra `ENTRA A TURNO` en el LCD.
@@ -195,6 +209,15 @@ Valores por defecto:
 }
 ```
 
+Preferencias de sonido persistidas en `cubo.terminal.sound`:
+
+```json
+{
+  "soundEnabled": true,
+  "soundVolume": 0.35
+}
+```
+
 Variables opcionales:
 
 ```env
@@ -219,6 +242,7 @@ Permite:
 - Ver cantidad de pendientes.
 - Probar `GET /health`.
 - Cambiar modo `API` / `LOCAL_MOCK`.
+- Activar o desactivar sonidos.
 
 Navegacion:
 
@@ -228,6 +252,7 @@ Navegacion:
 - `4`: probar conexion.
 - `5`: cambiar modo API/LOCAL_MOCK con `OK`.
 - `6`: salir.
+- `7`: sonido ON/OFF con `OK`.
 - `C`: volver al menu.
 - `F6` o `Escape`: salir de admin.
 
@@ -271,8 +296,10 @@ npm run dist
 6. Recuperar conexion: sincroniza pendientes progresivamente y marca `SYNCED` si AWS responde OK.
 7. `F2`, `F3`, `F4`, `F5`: mismo flujo.
 8. `F6 Admin`: pide PIN en LCD, muestra menu numerico y no abre modal.
-9. `npm run electron:dev` funciona.
-10. `npm run dist` genera `.exe`.
+9. `7 SONIDO`: alterna beeps del terminal y persiste la preferencia.
+10. Teclas, exito, offline, errores, admin y sincronizacion emiten patrones sonoros.
+11. `npm run electron:dev` funciona.
+12. `npm run dist` genera `.exe`.
 
 ## Limitaciones MVP
 

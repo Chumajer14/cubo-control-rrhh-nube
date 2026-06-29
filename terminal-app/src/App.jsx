@@ -2,6 +2,18 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import ClockDevice from "./components/ClockDevice";
 import { registerAttendanceEvent } from "./services/attendanceService";
 import { getOfflineQueueStats } from "./services/offlineQueueService";
+import {
+  isSoundEnabled,
+  playAdminEnterBeep,
+  playAdminExitBeep,
+  playButtonBeep,
+  playErrorBeep,
+  playOfflineBeep,
+  playSuccessBeep,
+  playSyncErrorBeep,
+  playSyncSuccessBeep,
+  setSoundEnabled
+} from "./services/soundService";
 import { checkApiHealth, syncPendingEvents } from "./services/syncService";
 import { getTerminalConfig, updateTerminalConfig } from "./services/terminalConfigService";
 import {
@@ -24,7 +36,8 @@ const ADMIN_MENU_LEVELS = {
   NETWORK: "NETWORK",
   PENDING: "PENDING",
   TEST_API: "TEST_API",
-  MODE: "MODE"
+  MODE: "MODE",
+  SOUND: "SOUND"
 };
 const TERMINAL_STATES = {
   IDLE: "IDLE",
@@ -82,6 +95,7 @@ export default function App() {
   const [adminState, setAdminState] = useState(adminInitialState);
   const [lcdLines, setLcdLines] = useState(["SELECCIONE ACCION"]);
   const [connectionStatus, setConnectionStatus] = useState("ONLINE");
+  const [soundEnabledState, setSoundEnabledState] = useState(() => isSoundEnabled());
   const [pendingCount, setPendingCount] = useState(() => getOfflineQueueStats().pending);
   const [voucher, setVoucher] = useState(null);
   const resetTimerRef = useRef(null);
@@ -124,11 +138,15 @@ export default function App() {
         return ["MODO ACTUAL", terminalConfig.mode === "API" ? "API" : "LOCAL MOCK"];
       }
 
+      if (adminState.menuLevel === ADMIN_MENU_LEVELS.SOUND) {
+        return ["SONIDO", soundEnabledState ? "SONIDO ON" : "SONIDO OFF", "OK CAMBIA"];
+      }
+
       if (adminState.menuLevel === ADMIN_MENU_LEVELS.TEST_API) {
         return lcdLines;
       }
 
-      return ["ADMIN MENU", "1CFG 2NET 3PEND", "4TEST 5MODO 6SAL"];
+      return ["ADMIN MENU", "1CFG 2NET 3PEND", "4TEST 5MODO 6SAL", "7SONIDO"];
     }
 
     return lcdLines;
@@ -143,6 +161,7 @@ export default function App() {
     pin.length,
     rutInput,
     selectedEventType,
+    soundEnabledState,
     terminalConfig.mode,
     terminalConfig.terminalCode,
     terminalState
@@ -183,6 +202,7 @@ export default function App() {
 
   const showError = useCallback(
     (errorCode = ERROR_CODES.INTERNAL) => {
+      playErrorBeep();
       finishAfterDelay(TERMINAL_STATES.ERROR, [errorCode.code, errorCode.message]);
     },
     [finishAfterDelay]
@@ -222,9 +242,14 @@ export default function App() {
   const processScannerBuffer = useCallback(() => {
     const scanText = scannerBufferRef.current;
     if (!shouldTreatBufferAsScan(scanText)) {
+      if (scanText) {
+        playButtonBeep();
+      }
+      scannerBufferRef.current = "";
       return;
     }
 
+    playButtonBeep();
     confirmRut("QR_CEDULA_SCANNER", scanText);
   }, [confirmRut]);
 
@@ -237,6 +262,8 @@ export default function App() {
   }, []);
 
   const clearCurrentField = useCallback(() => {
+    playButtonBeep();
+
     if (terminalState === TERMINAL_STATES.ADMIN_AUTH) {
       setAdminPin("");
       return;
@@ -276,6 +303,7 @@ export default function App() {
   }, []);
 
   const exitAdmin = useCallback(() => {
+    playAdminExitBeep();
     resetToIdle();
   }, [resetToIdle]);
 
@@ -289,6 +317,7 @@ export default function App() {
       });
       setTerminalState(TERMINAL_STATES.ADMIN_MODE);
       setLcdLines(["ADMIN MENU", "1CFG 2NET 3PEND", "4TEST 5MODO 6SAL"]);
+      playAdminEnterBeep();
       return;
     }
 
@@ -312,6 +341,11 @@ export default function App() {
     const health = await checkApiHealth(terminalConfig);
     setConnectionStatus(health.online ? "ONLINE" : "OFFLINE");
     setLcdLines(health.online ? ["API ONLINE", "OK"] : [ERROR_CODES.API_COMMUNICATION.code, "SIN COMUNIC"]);
+    if (health.online) {
+      playSyncSuccessBeep();
+      return;
+    }
+    playSyncErrorBeep();
   }, [setAdminMenuLevel, terminalConfig]);
 
   const toggleTerminalMode = useCallback(() => {
@@ -322,6 +356,12 @@ export default function App() {
     setAdminMenuLevel(ADMIN_MENU_LEVELS.TEST_API);
     setLcdLines(["CAMBIADO A", nextMode === "API" ? "API" : "LOCAL MOCK"]);
   }, [connectionStatus, setAdminMenuLevel, terminalConfig.mode]);
+
+  const toggleSound = useCallback(() => {
+    const nextSoundEnabled = !soundEnabledState;
+    setSoundEnabled(nextSoundEnabled);
+    setSoundEnabledState(nextSoundEnabled);
+  }, [soundEnabledState]);
 
   const handleAdminOption = useCallback(
     (option) => {
@@ -356,6 +396,11 @@ export default function App() {
 
       if (option === "6") {
         exitAdmin();
+        return;
+      }
+
+      if (option === "7") {
+        setAdminMenuLevel(ADMIN_MENU_LEVELS.SOUND);
       }
     },
     [adminState.menuLevel, exitAdmin, setAdminMenuLevel, terminalState, testAdminConnection]
@@ -376,8 +421,13 @@ export default function App() {
       return;
     }
 
+    if (adminState.menuLevel === ADMIN_MENU_LEVELS.SOUND) {
+      toggleSound();
+      return;
+    }
+
     setAdminMenuLevel(ADMIN_MENU_LEVELS.MAIN);
-  }, [adminState.menuLevel, confirmAdminPin, setAdminMenuLevel, terminalState, toggleTerminalMode]);
+  }, [adminState.menuLevel, confirmAdminPin, setAdminMenuLevel, terminalState, toggleSound, toggleTerminalMode]);
 
   const confirmPin = useCallback(async () => {
     if (!selectedEventType || !detectedRun || !pin) {
@@ -411,10 +461,12 @@ export default function App() {
     refreshQueueStats();
 
     if (result.offline) {
+      playOfflineBeep();
       finishAfterDelay(TERMINAL_STATES.SUCCESS_OFFLINE, getOfflineLcdLines(selectedEventType), nextVoucher);
       return;
     }
 
+    playSuccessBeep();
     finishAfterDelay(
       TERMINAL_STATES.SUCCESS_ONLINE,
       getOnlineLcdLines(selectedEventType, result.employeeName),
@@ -432,6 +484,8 @@ export default function App() {
   ]);
 
   const handleOk = useCallback(() => {
+    playButtonBeep();
+
     if (terminalState === TERMINAL_STATES.ADMIN_AUTH || terminalState === TERMINAL_STATES.ADMIN_MODE) {
       handleAdminOk();
       return;
@@ -453,6 +507,8 @@ export default function App() {
 
   const handleFunction = useCallback(
     (keyName) => {
+      playButtonBeep();
+
       if (keyName === "F6") {
         if (terminalState === TERMINAL_STATES.ADMIN_AUTH || terminalState === TERMINAL_STATES.ADMIN_MODE) {
           exitAdmin();
@@ -474,6 +530,8 @@ export default function App() {
 
   const handleDigit = useCallback(
     (digit) => {
+      playButtonBeep();
+
       if (terminalState === TERMINAL_STATES.ADMIN_AUTH) {
         setAdminPin((current) => (current.length >= MAX_ADMIN_PIN_LENGTH ? current : `${current}${digit}`));
         return;
@@ -497,6 +555,8 @@ export default function App() {
   );
 
   const handleK = useCallback(() => {
+    playButtonBeep();
+
     if (terminalState === TERMINAL_STATES.WAITING_RUT || terminalState === TERMINAL_STATES.ACTION_SELECTED) {
       appendRutCharacter("K");
     }
@@ -553,8 +613,13 @@ export default function App() {
       }
 
       setConnectionStatus("SYNCING");
-      await syncPendingEvents(terminalConfig);
+      const syncResult = await syncPendingEvents(terminalConfig);
       refreshQueueStats();
+      if (syncResult.ok && Number(syncResult.synced ?? 0) > 0) {
+        playSyncSuccessBeep();
+      } else if (!syncResult.ok) {
+        playSyncErrorBeep();
+      }
       const health = await checkApiHealth(terminalConfig);
       setConnectionStatus(health.online ? "ONLINE" : "OFFLINE");
     }
@@ -580,6 +645,10 @@ export default function App() {
 
       if (event.key === "Escape") {
         event.preventDefault();
+        playButtonBeep();
+        if (terminalState === TERMINAL_STATES.ADMIN_AUTH || terminalState === TERMINAL_STATES.ADMIN_MODE) {
+          playAdminExitBeep();
+        }
         resetToIdle();
         return;
       }
@@ -599,6 +668,7 @@ export default function App() {
 
         if (event.key === "Backspace") {
           event.preventDefault();
+          playButtonBeep();
           if (terminalState === TERMINAL_STATES.ADMIN_AUTH) {
             setAdminPin((current) => current.slice(0, -1));
           }
@@ -621,7 +691,14 @@ export default function App() {
 
         if (event.key === "Backspace") {
           event.preventDefault();
+          playButtonBeep();
           setRutInput((current) => formatManualRunInput(current.slice(0, -1)));
+          return;
+        }
+
+        if (event.key.toLowerCase() === "c") {
+          event.preventDefault();
+          clearCurrentField();
           return;
         }
 
@@ -640,19 +717,26 @@ export default function App() {
       if (terminalState === TERMINAL_STATES.WAITING_PIN) {
         if (/^\d$/.test(event.key)) {
           event.preventDefault();
-          appendPinDigit(event.key);
+          handleDigit(event.key);
           return;
         }
 
         if (event.key === "Backspace") {
           event.preventDefault();
+          playButtonBeep();
           setPin((current) => current.slice(0, -1));
+          return;
+        }
+
+        if (event.key.toLowerCase() === "c") {
+          event.preventDefault();
+          clearCurrentField();
           return;
         }
 
         if (event.key === "Enter") {
           event.preventDefault();
-          confirmPin();
+          handleOk();
         }
       }
     }
